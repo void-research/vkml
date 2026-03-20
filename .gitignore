@@ -1,5 +1,6 @@
-/src/bin
 /target
+/.cargo
+/src/bin
 Cargo.lock
 out.txt
 notes.txt
