@@ -1,4 +1,4 @@
-use crate::error::VKMLError;
+use crate::VKMLError;
 use crate::instruction::matmul::f32_f32_f32_cpu::f32_f32_f32_cpu;
 use crate::instruction::matmul::push_constants::{
     MatMul1D2DPushConstants, MatMul1D3DPushConstants, MatMul2D1DPushConstants,

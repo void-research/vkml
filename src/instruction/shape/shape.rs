@@ -1,4 +1,4 @@
-use crate::error::VKMLError;
+use crate::VKMLError;
 use crate::gpu::vk_gpu::Gpu;
 use crate::instruction::gpu_operations::GPUOperation;
 use crate::instruction::shape::push_constants::ShapePushConstants;

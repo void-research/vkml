@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use vulkanalia::vk::{self, DeviceV1_0};
 
-use crate::error::VKMLError;
+use crate::VKMLError;
 
 use super::gpu_memory::GPUMemory;
 use super::vk_gpu::Gpu;

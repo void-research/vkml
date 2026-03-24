@@ -1,4 +1,4 @@
-use crate::error::VKMLError;
+use crate::VKMLError;
 use crate::{
     ComputeManager,
     gpu::vk_gpu::Gpu,

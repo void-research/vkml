@@ -1,4 +1,4 @@
-use crate::error::VKMLError;
+use crate::VKMLError;
 use crate::instruction::gemm::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu;
 use crate::instruction::gemm::push_constants::GemmPushConstants;
 use crate::utils::bytes::as_bytes;

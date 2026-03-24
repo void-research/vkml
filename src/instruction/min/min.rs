@@ -1,5 +1,5 @@
 use crate::ComputeManager;
-use crate::error::VKMLError;
+use crate::VKMLError;
 use crate::instruction::min::push_constants::MinPushConstants;
 use crate::utils::as_bytes;
 use crate::{

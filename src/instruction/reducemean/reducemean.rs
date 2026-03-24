@@ -1,4 +1,4 @@
-use crate::error::VKMLError;
+use crate::VKMLError;
 use crate::gpu::vk_gpu::Gpu;
 use crate::instruction::reducemean::f32_cpu::f32_cpu;
 use crate::instruction::reducemean::push_constants::ReduceMeanPushConstants;

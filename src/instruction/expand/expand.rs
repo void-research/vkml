@@ -1,5 +1,5 @@
 use crate::ComputeManager;
-use crate::error::VKMLError;
+use crate::VKMLError;
 use crate::instruction::expand::f32_f32_cpu::f32_f32_cpu;
 use crate::instruction::expand::push_constants::ExpandPushConstants;
 use crate::utils::as_bytes;

@@ -2,7 +2,7 @@ use std::sync::{Arc, Weak};
 
 use vulkanalia::{vk, vk::DeviceV1_0};
 
-use crate::error::VKMLError;
+use crate::VKMLError;
 
 use super::vk_gpu::Gpu;
 

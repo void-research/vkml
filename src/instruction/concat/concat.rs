@@ -1,6 +1,5 @@
 use crate::{
-    ComputeManager,
-    error::VKMLError,
+    ComputeManager, VKMLError,
     gpu::vk_gpu::Gpu,
     instruction::{concat::f32_cpu::f32_cpu, instruction::Instruction},
     tensor_graph::TensorId,

@@ -1,5 +1,5 @@
 use crate::ComputeManager;
-use crate::error::VKMLError;
+use crate::VKMLError;
 use crate::instruction::conv::push_constants::{
     Conv1DPushConstants, Conv2DPushConstants, Conv3DPushConstants,
 };

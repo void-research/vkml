@@ -7,7 +7,7 @@ use vulkanalia::{
 };
 use zero_pool::global_pool;
 
-use crate::{error::VKMLError, gpu::vk_gpu::Gpu};
+use crate::{VKMLError, gpu::vk_gpu::Gpu};
 
 pub struct GpuPool {
     gpus: Vec<Arc<Gpu>>,

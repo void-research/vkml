@@ -1,5 +1,5 @@
 use crate::ComputeManager;
-use crate::error::VKMLError;
+use crate::VKMLError;
 use crate::instruction::gpu_operations::GPUOperation;
 use crate::instruction::maxpool::push_constants::{
     MaxPool1DPushConstants, MaxPool2DPushConstants, MaxPool3DPushConstants,
