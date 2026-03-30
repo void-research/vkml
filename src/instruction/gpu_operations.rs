@@ -1,146 +1,145 @@
-use std::sync::OnceLock;
-
-// Lazy-loaded shader storage
-// Array is indexed by GPUOperation discriminant
-// using __Count sentinal might not be the most reliable
-// std::mem::variant_count is currently unstable
-static SHADERS: [OnceLock<Vec<u8>>; GPUOperation::__Count as usize] =
-    [const { OnceLock::new() }; GPUOperation::__Count as usize];
-
-// SGA = Sub Group Arithmetic
 #[allow(non_camel_case_types)]
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
 pub enum GPUOperation {
-    Addition_F32_F32_F32,
-    Addition_F32_F32_F32_NoStride,
-    Addition_F16_F16_F16,
-    Subtract_F32_F32_F32,
-    Multiply_F32_F32_F32,
-    Divide_F32_F32_F32,
-    Expand_F32_F32,
-    Expand_F16_F16,
-    Maximum_F32_F32_F32,
-    Minimum_F32_F32_F32,
-    ReLU_F32_F32,
-    ReLU_F16_F16,
-    Sigmoid_F32_F32,
-    Softmax_F32_F32,
-    Softmax_F16_F16,
-    Softmax_F32_F32_SGA,
-    Conv1D_F32_F32_F32_F32,
-    Conv2D_F32_F32_F32_F32,
-    Conv3D_F32_F32_F32_F32,
-    Conv2D_F16_F16_F16_F16,
-    MaxPool1D_F32_F32,
-    MaxPool2D_F32_F32,
-    MaxPool3D_F32_F32,
-    MaxPool2D_F16_F16,
-    MatMul1D2D_F32_F32_F32,
-    MatMul2D1D_F32_F32_F32,
-    MatMul2D2D_F32_F32_F32,
-    MatMul2D3D_F32_F32_F32,
-    MatMul3D2D_F32_F32_F32,
-    MatMul3D3D_F32_F32_F32,
-    MatMul3D1D_F32_F32_F32,
-    MatMul1D3D_F32_F32_F32,
-    MatMul2D2D_F16_F16_F16,
-    MatMul2D2D_F16_F16_F16_Coop_16_16_16,
-    MatMul2D2D_F32_F32_F32_Tiled_4x4,
-    MatMul2D2D_F32_F32_F32_Tiled_8x8,
-    MatMul2D2D_F32_F32_F32_Tiled_16x16,
-    MatMul2D2D_F32_F32_F32_Tiled_32x32,
-    Shape_Write_I64,
-    ReduceMean_F32_F32,
-    ReduceMean_F16_F16,
-    Gemm_F32_F32_F32_F32,
-    Gemm_F16_F16_F16_F16,
-    Gemm_F32_F32_F32_F32_Tiled_4x4,
-    Gemm_F32_F32_F32_F32_Tiled_8x8,
-    Gemm_F32_F32_F32_F32_Tiled_16x16,
-    Gemm_F32_F32_F32_F32_Tiled_32x32,
-    __Count,
+    // Slang fully dynamic generic variants
+    Addition,
+    Addition_NoStride,
+    Subtract,
+    Multiply,
+    Divide,
+    Maximum,
+    Minimum,
+    ReLU,
+    Sigmoid,
+    Expand,
+    ReduceMean,
+    Shape_Write,
+    MaxPool_1D,
+    MaxPool_2D,
+    MaxPool_3D,
+    Softmax,
+    Softmax_SGA,
+    Conv_1D,
+    Conv_2D,
+    Conv_3D,
+    MatMul_1D2D,
+    MatMul_2D1D,
+    MatMul_2D2D,
+    MatMul_2D3D,
+    MatMul_3D2D,
+    MatMul_3D3D,
+    MatMul_3D1D,
+    MatMul_1D3D,
+    MatMul_2D2D_Tiled,
+    Gemm,
+    Gemm_2D2D_Tiled,
 }
 
 impl GPUOperation {
-    pub fn get_shader_bytes(&self) -> &[u8] {
-        let idx = *self as usize;
-        SHADERS[idx].get_or_init(|| {
-            let filename = self.shader_filename();
-            let path = format!("{}/shaders/{}", env!("OUT_DIR"), filename);
-            std::fs::read(&path)
-                .unwrap_or_else(|e| panic!("Failed to load shader file '{}': {}", path, e))
-        })
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GPUOperation::Addition => "addition",
+            GPUOperation::Addition_NoStride => "addition_nostride",
+            GPUOperation::Subtract => "subtract",
+            GPUOperation::Multiply => "multiply",
+            GPUOperation::Divide => "divide",
+            GPUOperation::Maximum => "maximum",
+            GPUOperation::Minimum => "minimum",
+            GPUOperation::ReLU => "relu",
+            GPUOperation::Sigmoid => "sigmoid",
+            GPUOperation::Expand => "expand",
+            GPUOperation::ReduceMean => "reducemean",
+            GPUOperation::Shape_Write => "shape_write",
+            GPUOperation::MaxPool_1D => "maxpool_1d",
+            GPUOperation::MaxPool_2D => "maxpool_2d",
+            GPUOperation::MaxPool_3D => "maxpool_3d",
+            GPUOperation::Softmax => "softmax",
+            GPUOperation::Softmax_SGA => "softmax_sga",
+            GPUOperation::Conv_1D => "conv_1d",
+            GPUOperation::Conv_2D => "conv_2d",
+            GPUOperation::Conv_3D => "conv_3d",
+            GPUOperation::MatMul_1D2D => "matmul_1d2d",
+            GPUOperation::MatMul_2D1D => "matmul_2d1d",
+            GPUOperation::MatMul_2D2D => "matmul_2d2d",
+            GPUOperation::MatMul_2D3D => "matmul_2d3d",
+            GPUOperation::MatMul_3D2D => "matmul_3d2d",
+            GPUOperation::MatMul_3D3D => "matmul_3d3d",
+            GPUOperation::MatMul_3D1D => "matmul_3d1d",
+            GPUOperation::MatMul_1D3D => "matmul_1d3d",
+            GPUOperation::MatMul_2D2D_Tiled => "matmul_2d2d_tiled",
+            GPUOperation::Gemm => "gemm",
+            GPUOperation::Gemm_2D2D_Tiled => "gemm_2d2d_tiled",
+        }
     }
 
-    fn shader_filename(&self) -> &'static str {
+    pub fn binding_count(&self) -> usize {
         match self {
-            GPUOperation::Addition_F32_F32_F32 => "f32_f32_f32_add.spv",
-            GPUOperation::Addition_F32_F32_F32_NoStride => "f32_f32_f32_add_nostride.spv",
-            GPUOperation::Addition_F16_F16_F16 => "f16_f16_f16_add.spv",
-            GPUOperation::Subtract_F32_F32_F32 => "f32_f32_f32_sub.spv",
-            GPUOperation::Multiply_F32_F32_F32 => "f32_f32_f32_mul.spv",
-            GPUOperation::Divide_F32_F32_F32 => "f32_f32_f32_div.spv",
-            GPUOperation::Expand_F32_F32 => "f32_f32_expand.spv",
-            GPUOperation::Expand_F16_F16 => "f16_f16_expand.spv",
-            GPUOperation::Maximum_F32_F32_F32 => "f32_f32_f32_max.spv",
-            GPUOperation::Minimum_F32_F32_F32 => "f32_f32_f32_min.spv",
+            GPUOperation::Addition => 3,
+            GPUOperation::Addition_NoStride => 3,
+            GPUOperation::Subtract => 3,
+            GPUOperation::Multiply => 3,
+            GPUOperation::Divide => 3,
+            GPUOperation::Maximum => 3,
+            GPUOperation::Minimum => 3,
+            GPUOperation::ReLU => 2,
+            GPUOperation::Sigmoid => 2,
+            GPUOperation::Expand => 2,
+            GPUOperation::ReduceMean => 2,
+            GPUOperation::Shape_Write => 1,
+            GPUOperation::MaxPool_1D => 2,
+            GPUOperation::MaxPool_2D => 2,
+            GPUOperation::MaxPool_3D => 2,
+            GPUOperation::Softmax => 2,
+            GPUOperation::Softmax_SGA => 2,
+            GPUOperation::Conv_1D => 4,
+            GPUOperation::Conv_2D => 4,
+            GPUOperation::Conv_3D => 4,
+            GPUOperation::MatMul_1D2D
+            | GPUOperation::MatMul_2D1D
+            | GPUOperation::MatMul_2D2D
+            | GPUOperation::MatMul_2D3D
+            | GPUOperation::MatMul_3D2D
+            | GPUOperation::MatMul_3D3D
+            | GPUOperation::MatMul_3D1D
+            | GPUOperation::MatMul_1D3D
+            | GPUOperation::MatMul_2D2D_Tiled => 3,
+            GPUOperation::Gemm | GPUOperation::Gemm_2D2D_Tiled => 4,
+        }
+    }
 
-            GPUOperation::ReLU_F32_F32 => "f32_f32_relu.spv",
-            GPUOperation::ReLU_F16_F16 => "f16_f16_relu.spv",
-            GPUOperation::Sigmoid_F32_F32 => "f32_f32_sigmoid.spv",
-            GPUOperation::Softmax_F32_F32 => "f32_f32_softmax.spv",
-            GPUOperation::Softmax_F16_F16 => "f16_f16_softmax.spv",
-            GPUOperation::Softmax_F32_F32_SGA => "f32_f32_softmax_sga.spv",
-
-            GPUOperation::Conv1D_F32_F32_F32_F32 => "f32_f32_f32_f32_conv1d.spv",
-            GPUOperation::Conv2D_F32_F32_F32_F32 => "f32_f32_f32_f32_conv2d.spv",
-            GPUOperation::Conv3D_F32_F32_F32_F32 => "f32_f32_f32_f32_conv3d.spv",
-            GPUOperation::Conv2D_F16_F16_F16_F16 => "f16_f16_f16_f16_conv2d.spv",
-
-            GPUOperation::MaxPool1D_F32_F32 => "f32_f32_maxpool1d.spv",
-            GPUOperation::MaxPool2D_F32_F32 => "f32_f32_maxpool2d.spv",
-            GPUOperation::MaxPool3D_F32_F32 => "f32_f32_maxpool3d.spv",
-            GPUOperation::MaxPool2D_F16_F16 => "f16_f16_maxpool2d.spv",
-
-            GPUOperation::MatMul1D2D_F32_F32_F32 => "f32_f32_f32_matmul_1d_2d.spv",
-            GPUOperation::MatMul2D1D_F32_F32_F32 => "f32_f32_f32_matmul_2d_1d.spv",
-            GPUOperation::MatMul2D2D_F32_F32_F32 => "f32_f32_f32_matmul_2d_2d.spv",
-            GPUOperation::MatMul2D3D_F32_F32_F32 => "f32_f32_f32_matmul_2d_3d.spv",
-            GPUOperation::MatMul3D2D_F32_F32_F32 => "f32_f32_f32_matmul_3d_2d.spv",
-            GPUOperation::MatMul3D3D_F32_F32_F32 => "f32_f32_f32_matmul_3d_3d.spv",
-            GPUOperation::MatMul3D1D_F32_F32_F32 => "f32_f32_f32_matmul_3d_1d.spv",
-            GPUOperation::MatMul1D3D_F32_F32_F32 => "f32_f32_f32_matmul_1d_3d.spv",
-            GPUOperation::MatMul2D2D_F16_F16_F16 => "f16_f16_f16_matmul_2d_2d.spv",
-            GPUOperation::MatMul2D2D_F16_F16_F16_Coop_16_16_16 => {
-                "f16_f16_f16_matmul_2d_2d_coop_16_16_16.spv"
-            }
-            GPUOperation::MatMul2D2D_F32_F32_F32_Tiled_4x4 => {
-                "f32_f32_f32_matmul_2d_2d_tiled_4x4.spv"
-            }
-            GPUOperation::MatMul2D2D_F32_F32_F32_Tiled_8x8 => {
-                "f32_f32_f32_matmul_2d_2d_tiled_8x8.spv"
-            }
-            GPUOperation::MatMul2D2D_F32_F32_F32_Tiled_16x16 => {
-                "f32_f32_f32_matmul_2d_2d_tiled_16x16.spv"
-            }
-            GPUOperation::MatMul2D2D_F32_F32_F32_Tiled_32x32 => {
-                "f32_f32_f32_matmul_2d_2d_tiled_32x32.spv"
-            }
-
-            GPUOperation::Shape_Write_I64 => "i64_shape.spv",
-            GPUOperation::ReduceMean_F32_F32 => "f32_f32_reducemean.spv",
-            GPUOperation::ReduceMean_F16_F16 => "f16_f16_reducemean.spv",
-            GPUOperation::Gemm_F32_F32_F32_F32 => "f32_f32_f32_f32_gemm.spv",
-            GPUOperation::Gemm_F16_F16_F16_F16 => "f16_f16_f16_f16_gemm.spv",
-            GPUOperation::Gemm_F32_F32_F32_F32_Tiled_4x4 => "f32_f32_f32_f32_gemm_tiled_4x4.spv",
-            GPUOperation::Gemm_F32_F32_F32_F32_Tiled_8x8 => "f32_f32_f32_f32_gemm_tiled_8x8.spv",
-            GPUOperation::Gemm_F32_F32_F32_F32_Tiled_16x16 => {
-                "f32_f32_f32_f32_gemm_tiled_16x16.spv"
-            }
-            GPUOperation::Gemm_F32_F32_F32_F32_Tiled_32x32 => {
-                "f32_f32_f32_f32_gemm_tiled_32x32.spv"
-            }
-            GPUOperation::__Count => unreachable!("__Count is not a valid shader operation"),
+    pub fn to_slang_shader(&self) -> Result<&'static [u8], crate::utils::error::VKMLError> {
+        match self {
+            GPUOperation::Addition => Ok(include_bytes!("add/add.slang")),
+            GPUOperation::Addition_NoStride => Ok(include_bytes!("add/add_nostride.slang")),
+            GPUOperation::Subtract => Ok(include_bytes!("sub/sub.slang")),
+            GPUOperation::Multiply => Ok(include_bytes!("mul/mul.slang")),
+            GPUOperation::Divide => Ok(include_bytes!("div/div.slang")),
+            GPUOperation::Maximum => Ok(include_bytes!("max/max.slang")),
+            GPUOperation::Minimum => Ok(include_bytes!("min/min.slang")),
+            GPUOperation::ReLU => Ok(include_bytes!("relu/relu.slang")),
+            GPUOperation::Sigmoid => Ok(include_bytes!("sigmoid/sigmoid.slang")),
+            GPUOperation::Expand => Ok(include_bytes!("expand/expand.slang")),
+            GPUOperation::ReduceMean => Ok(include_bytes!("reducemean/reducemean.slang")),
+            GPUOperation::Shape_Write => Ok(include_bytes!("shape/shape.slang")),
+            GPUOperation::MaxPool_1D => Ok(include_bytes!("maxpool/maxpool_1d.slang")),
+            GPUOperation::MaxPool_2D => Ok(include_bytes!("maxpool/maxpool_2d.slang")),
+            GPUOperation::MaxPool_3D => Ok(include_bytes!("maxpool/maxpool_3d.slang")),
+            GPUOperation::Softmax => Ok(include_bytes!("softmax/softmax.slang")),
+            GPUOperation::Softmax_SGA => Ok(include_bytes!("softmax/softmax_sga.slang")),
+            GPUOperation::Conv_1D => Ok(include_bytes!("conv/conv_1d.slang")),
+            GPUOperation::Conv_2D => Ok(include_bytes!("conv/conv_2d.slang")),
+            GPUOperation::Conv_3D => Ok(include_bytes!("conv/conv_3d.slang")),
+            GPUOperation::MatMul_1D2D => Ok(include_bytes!("matmul/matmul_1d2d.slang")),
+            GPUOperation::MatMul_2D1D => Ok(include_bytes!("matmul/matmul_2d1d.slang")),
+            GPUOperation::MatMul_2D2D => Ok(include_bytes!("matmul/matmul_2d2d.slang")),
+            GPUOperation::MatMul_2D3D => Ok(include_bytes!("matmul/matmul_2d3d.slang")),
+            GPUOperation::MatMul_3D2D => Ok(include_bytes!("matmul/matmul_3d2d.slang")),
+            GPUOperation::MatMul_3D3D => Ok(include_bytes!("matmul/matmul_3d3d.slang")),
+            GPUOperation::MatMul_3D1D => Ok(include_bytes!("matmul/matmul_3d1d.slang")),
+            GPUOperation::MatMul_1D3D => Ok(include_bytes!("matmul/matmul_1d3d.slang")),
+            GPUOperation::MatMul_2D2D_Tiled => Ok(include_bytes!("matmul/matmul_tiled.slang")),
+            GPUOperation::Gemm => Ok(include_bytes!("gemm/gemm.slang")),
+            GPUOperation::Gemm_2D2D_Tiled => Ok(include_bytes!("gemm/gemm_tiled.slang")),
         }
     }
 }

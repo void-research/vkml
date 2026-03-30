@@ -182,33 +182,30 @@ impl Instruction for ConvInstruction {
                 let weight_dtype = weights_tensor.desc().data_type();
                 let bias_dtype_opt = bias_tensor_opt.as_ref().map(|t| t.desc().data_type());
                 let dst_dtype = dst_desc.data_type();
-                let gpu_op = match (src_dtype, weight_dtype, bias_dtype_opt, dst_dtype) {
-                    (DataType::Float, DataType::Float, None, DataType::Float)
-                    | (DataType::Float, DataType::Float, Some(DataType::Float), DataType::Float) => {
-                        GPUOperation::Conv1D_F32_F32_F32_F32
-                    }
-                    _ => {
-                        return Err(VKMLError::Instruction(format!(
-                            "GPU Conv unimplemented for DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
-                            src_dtype,
-                            weight_dtype,
-                            bias_dtype_opt
-                                .map(|dt| format!("{:?}", dt))
-                                .unwrap_or_else(|| "None".to_string()),
-                            dst_dtype
-                        )));
-                    }
-                };
+                if src_dtype != weight_dtype
+                    || src_dtype != dst_dtype
+                    || (bias_dtype_opt.is_some() && bias_dtype_opt != Some(src_dtype))
+                {
+                    return Err(VKMLError::Instruction(format!(
+                        "GPU Conv unimplemented for mixed DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
+                        src_dtype,
+                        weight_dtype,
+                        bias_dtype_opt
+                            .map(|dt| format!("{:?}", dt))
+                            .unwrap_or_else(|| "None".to_string()),
+                        dst_dtype
+                    )));
+                }
 
-                let binding_count = 4; // src, weights, dst, bias (optional)
+                let gpu_op = GPUOperation::Conv_1D;
 
-                gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
+                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
                 gpu.bind_storage_buffers_optional(
                     command_buffer,
                     &[Some(src_mem), Some(weights_mem), Some(dst_mem), bias_mem],
                 );
 
-                gpu.bind_push_constants(command_buffer, binding_count, push_constant_bytes);
+                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
 
                 // dispatch: provide total work counts per-dimension; Gpu::dispatch will
                 // compute the needed number of workgroups as ceil(work/local_size)
@@ -253,40 +250,30 @@ impl Instruction for ConvInstruction {
                 let weight_dtype = weights_tensor.desc().data_type();
                 let bias_dtype_opt = bias_tensor_opt.as_ref().map(|t| t.desc().data_type());
                 let dst_dtype = dst_desc.data_type();
-                let gpu_op = match (src_dtype, weight_dtype, bias_dtype_opt, dst_dtype) {
-                    (DataType::Float, DataType::Float, None, DataType::Float)
-                    | (DataType::Float, DataType::Float, Some(DataType::Float), DataType::Float) => {
-                        GPUOperation::Conv2D_F32_F32_F32_F32
-                    }
-                    (DataType::Float16, DataType::Float16, None, DataType::Float16)
-                    | (
-                        DataType::Float16,
-                        DataType::Float16,
-                        Some(DataType::Float16),
-                        DataType::Float16,
-                    ) => GPUOperation::Conv2D_F16_F16_F16_F16,
-                    _ => {
-                        return Err(VKMLError::Instruction(format!(
-                            "GPU Conv unimplemented for DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
-                            src_dtype,
-                            weight_dtype,
-                            bias_dtype_opt
-                                .map(|dt| format!("{:?}", dt))
-                                .unwrap_or_else(|| "None".to_string()),
-                            dst_dtype
-                        )));
-                    }
-                };
+                if src_dtype != weight_dtype
+                    || src_dtype != dst_dtype
+                    || (bias_dtype_opt.is_some() && bias_dtype_opt != Some(src_dtype))
+                {
+                    return Err(VKMLError::Instruction(format!(
+                        "GPU Conv unimplemented for mixed DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
+                        src_dtype,
+                        weight_dtype,
+                        bias_dtype_opt
+                            .map(|dt| format!("{:?}", dt))
+                            .unwrap_or_else(|| "None".to_string()),
+                        dst_dtype
+                    )));
+                }
 
-                let binding_count = 4; // src, weights, dst, bias (optional)
+                let gpu_op = GPUOperation::Conv_2D;
 
-                gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
+                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
                 gpu.bind_storage_buffers_optional(
                     command_buffer,
                     &[Some(src_mem), Some(weights_mem), Some(dst_mem), bias_mem],
                 );
 
-                gpu.bind_push_constants(command_buffer, binding_count, push_constant_bytes);
+                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
 
                 // dispatch using total work extents (width, height, batch)
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, batch_nm]);
@@ -347,33 +334,30 @@ impl Instruction for ConvInstruction {
                 let weight_dtype = weights_tensor.desc().data_type();
                 let bias_dtype_opt = bias_tensor_opt.as_ref().map(|t| t.desc().data_type());
                 let dst_dtype = dst_desc.data_type();
-                let gpu_op = match (src_dtype, weight_dtype, bias_dtype_opt, dst_dtype) {
-                    (DataType::Float, DataType::Float, None, DataType::Float)
-                    | (DataType::Float, DataType::Float, Some(DataType::Float), DataType::Float) => {
-                        GPUOperation::Conv3D_F32_F32_F32_F32
-                    }
-                    _ => {
-                        return Err(VKMLError::Instruction(format!(
-                            "GPU Conv unimplemented for DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
-                            src_dtype,
-                            weight_dtype,
-                            bias_dtype_opt
-                                .map(|dt| format!("{:?}", dt))
-                                .unwrap_or_else(|| "None".to_string()),
-                            dst_dtype
-                        )));
-                    }
-                };
+                if src_dtype != weight_dtype
+                    || src_dtype != dst_dtype
+                    || (bias_dtype_opt.is_some() && bias_dtype_opt != Some(src_dtype))
+                {
+                    return Err(VKMLError::Instruction(format!(
+                        "GPU Conv unimplemented for mixed DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
+                        src_dtype,
+                        weight_dtype,
+                        bias_dtype_opt
+                            .map(|dt| format!("{:?}", dt))
+                            .unwrap_or_else(|| "None".to_string()),
+                        dst_dtype
+                    )));
+                }
 
-                let binding_count = 4; // src, weights, dst, bias (optional)
+                let gpu_op = GPUOperation::Conv_3D;
 
-                gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
+                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
                 gpu.bind_storage_buffers_optional(
                     command_buffer,
                     &[Some(src_mem), Some(weights_mem), Some(dst_mem), bias_mem],
                 );
 
-                gpu.bind_push_constants(command_buffer, binding_count, push_constant_bytes);
+                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
 
                 // dispatch over (w, h, depth * batch)
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, total_z]);

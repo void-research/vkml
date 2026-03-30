@@ -109,23 +109,21 @@ impl Instruction for ShapeInstruction {
 
         // Respect DataType: Shape always writes int64 outputs on GPU
         let dst_dtype = dst_t.desc().data_type();
-        let gpu_op = match dst_dtype {
-            DataType::Int64 => GPUOperation::Shape_Write_I64,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU Shape unimplemented for dst DataType: {:?}, expected Int64",
-                    dst_dtype
-                )));
-            }
-        };
-        let local_size = gpu.optimal_workgroup_size_1d(slice_len as u64);
-        let binding_count = 1; // dst only
+        if dst_dtype != DataType::Int64 {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Shape unimplemented for dst DataType: {:?}, expected Int64",
+                dst_dtype
+            )));
+        }
 
-        gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
+        let gpu_op = GPUOperation::Shape_Write;
+        let local_size = gpu.optimal_workgroup_size_1d(slice_len as u64);
+
+        gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[dst_mem]);
 
         let pc_bytes = as_bytes(&pc);
-        gpu.bind_push_constants(command_buffer, binding_count, pc_bytes);
+        gpu.bind_push_constants(command_buffer, gpu_op, pc_bytes);
 
         // Dispatch with one work item per shape element
         gpu.dispatch(command_buffer, local_size, [slice_len as u64, 1, 1]);

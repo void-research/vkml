@@ -101,26 +101,22 @@ impl Instruction for ExpandInstruction {
         // Choose operation based on tensor DataType
         let src_dtype = src_desc.data_type();
         let dst_dtype = dst_desc.data_type();
-        let gpu_op = match (src_dtype, dst_dtype) {
-            (DataType::Float, DataType::Float) => GPUOperation::Expand_F32_F32,
-            (DataType::Float16, DataType::Float16) => GPUOperation::Expand_F16_F16,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU Expand unimplemented for DataType src:{:?}, dst:{:?}",
-                    src_dtype, dst_dtype
-                )));
-            }
-        };
+        if src_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Expand unimplemented for DataType src:{:?}, dst:{:?}",
+                src_dtype, dst_dtype
+            )));
+        }
+
+        let gpu_op = GPUOperation::Expand;
 
         // Optimal local workgroup size for 1D element-wise op
         let local_size = gpu.optimal_workgroup_size_1d(total_elements);
 
-        let binding_count = 2; // src, dst
-
         // Bind pipeline, storage buffers, push constants
-        gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
+        gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-        gpu.bind_push_constants(command_buffer, binding_count, push_constant_bytes);
+        gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
 
         let num_elements: u64 = dst_dims_usize.iter().map(|d| *d as u64).product();
         gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);

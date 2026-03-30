@@ -96,37 +96,25 @@ impl Instruction for SoftmaxInstruction {
         let src_dtype = src_tensor.desc().data_type();
         let dst_dtype = dst_tensor.desc().data_type();
 
-        let gpu_op = match (src_dtype, dst_dtype) {
-            (DataType::Float, DataType::Float) => GPUOperation::Softmax_F32_F32,
-            (DataType::Float16, DataType::Float16) => GPUOperation::Softmax_F16_F16,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU Softmax unimplemented for DataType src:{:?}, dst:{:?}",
-                    src_dtype, dst_dtype
-                )));
-            }
-        };
+        if src_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Softmax unimplemented for DataType src:{:?}, dst:{:?}",
+                src_dtype, dst_dtype
+            )));
+        }
 
-        // Subgroup-optimized variant for F32 softmax
-        // SGA variant: The staticly sized shared memory in shaders
-        // requires subgroup size of at least 16
-        if gpu_op == GPUOperation::Softmax_F32_F32
-            && gpu
-                .subgroup_supported_operations()
-                .contains(vk::SubgroupFeatureFlags::ARITHMETIC)
+        // Subgroup-optimized variant
+        if gpu
+            .subgroup_supported_operations()
+            .contains(vk::SubgroupFeatureFlags::ARITHMETIC)
             && gpu.subgroup_size() >= 16
         {
+            let gpu_op = GPUOperation::Softmax_SGA;
             let local_size = gpu.optimal_workgroup_size_1d(feature_size as u64);
-            let binding_count = 2;
 
-            gpu.bind_compute_pipeline(
-                command_buffer,
-                GPUOperation::Softmax_F32_F32_SGA,
-                local_size,
-                binding_count,
-            );
+            gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
             gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-            gpu.bind_push_constants(command_buffer, binding_count, pc_bytes);
+            gpu.bind_push_constants(command_buffer, gpu_op, pc_bytes);
 
             gpu.dispatch(
                 command_buffer,
@@ -138,17 +126,13 @@ impl Instruction for SoftmaxInstruction {
         }
 
         // Standard path
+        let gpu_op = GPUOperation::Softmax;
         let local_size = gpu.optimal_workgroup_size_1d(feature_size as u64);
-        let binding_count = 2;
 
-        gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
+        gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-        gpu.bind_push_constants(command_buffer, binding_count, pc_bytes);
+        gpu.bind_push_constants(command_buffer, gpu_op, pc_bytes);
 
-        // Dispatch one workgroup per batch element — dispatch() expects the
-        // global work size (number of work items / threads) rather than
-        // the number of workgroups. To get one workgroup per batch we must
-        // pass batch_size * local_size.x as the global work size.
         gpu.dispatch(
             command_buffer,
             local_size,

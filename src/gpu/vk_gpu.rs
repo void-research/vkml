@@ -1,3 +1,4 @@
+use onnx_extractor::DataType;
 use std::{
     collections::{HashMap, HashSet},
     ffi::{CString, c_void},
@@ -38,7 +39,7 @@ pub struct Gpu {
     allocator: GpuAllocator,
 
     // Drop order matters: fields drop top-to-bottom
-    pipelines: RwLock<HashMap<(GPUOperation, [u32; 3], usize), vk::Pipeline>>,
+    pipelines_slang: RwLock<HashMap<(GPUOperation, DataType, [u32; 3]), vk::Pipeline>>,
     descriptor_set_layouts: Box<[OnceLock<vk::DescriptorSetLayout>]>,
     pipeline_layouts: Box<[OnceLock<vk::PipelineLayout>]>,
     command_pool: vk::CommandPool,
@@ -243,7 +244,7 @@ impl Gpu {
 
                 allocator: GpuAllocator::new(),
 
-                pipelines: RwLock::new(HashMap::new()),
+                pipelines_slang: RwLock::new(HashMap::new()),
                 descriptor_set_layouts,
                 pipeline_layouts,
                 command_pool,
@@ -430,31 +431,31 @@ impl Gpu {
         }
     }
 
-    pub fn get_or_create_pipeline(
+    pub fn get_or_create_slang_pipeline(
         &self,
         op: GPUOperation,
+        dtype: DataType,
         local_size: [u32; 3],
-        binding_count: usize,
     ) -> vk::Pipeline {
-        let key = (op, local_size, binding_count);
+        let key = (op, dtype, local_size);
 
-        // Fast path: pipeline already exists
-        if let Some(&pipeline) = self.pipelines.read().unwrap().get(&key) {
+        if let Some(&pipeline) = self.pipelines_slang.read().unwrap().get(&key) {
             return pipeline;
         }
 
-        // Slow path: create pipeline
+        let compiled_spirv = crate::gpu::slang_compiler::compile(op, dtype, local_size)
+            .unwrap_or_else(|e| panic!("Slang compilation failed for {:?}: {}", op, e));
+
         let pipeline = self
-            .create_pipeline(op.get_shader_bytes(), local_size, binding_count)
+            .create_pipeline(&compiled_spirv, local_size, op.binding_count())
             .unwrap_or_else(|_| {
                 panic!(
-                    "Pipeline creation failed {:?} with workgroup {:?}",
+                    "Slang Pipeline creation failed for {:?} with workgroup {:?}",
                     op, local_size
                 )
             });
 
-        // Insert and return (handles race condition gracefully)
-        self.pipelines
+        self.pipelines_slang
             .write()
             .unwrap()
             .entry(key)
@@ -785,16 +786,15 @@ impl Gpu {
         }
     }
 
-    /// Bind a compute pipeline with the specified workgroup size and binding count
-    pub fn bind_compute_pipeline(
+    pub fn bind_slang_compute_pipeline(
         &self,
         command_buffer: vk::CommandBuffer,
-        operation: GPUOperation,
+        op: GPUOperation,
+        dtype: DataType,
         local_size: [u32; 3],
-        binding_count: usize,
     ) {
         unsafe {
-            let pipeline = self.get_or_create_pipeline(operation, local_size, binding_count);
+            let pipeline = self.get_or_create_slang_pipeline(op, dtype, local_size);
             self.get_device().cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
@@ -807,13 +807,13 @@ impl Gpu {
     pub fn bind_push_constants(
         &self,
         command_buffer: vk::CommandBuffer,
-        binding_count: usize,
+        op: GPUOperation,
         data: &[u8],
     ) {
         unsafe {
             self.get_device().cmd_push_constants(
                 command_buffer,
-                self.get_pipeline_layout(binding_count),
+                self.get_pipeline_layout(op.binding_count()),
                 vk::ShaderStageFlags::COMPUTE,
                 0,
                 data,

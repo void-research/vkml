@@ -1,6 +1,6 @@
 pub mod bytes;
+pub mod dtype;
 pub mod error;
-pub mod vk_to_onnx_dtype;
 
 pub mod onnx_autopad;
 pub use bytes::as_bytes;

@@ -58,25 +58,24 @@ impl Instruction for ReLUInstruction {
         // Choose operation based on DataType
         let src_dtype = src_tensor.desc().data_type();
         let dst_dtype = dst_tensor.desc().data_type();
-        let gpu_op = match (src_dtype, dst_dtype) {
-            (DataType::Float, DataType::Float) => GPUOperation::ReLU_F32_F32,
-            (DataType::Float16, DataType::Float16) => GPUOperation::ReLU_F16_F16,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU ReLU unimplemented for DataType src:{:?}, dst:{:?}",
-                    src_dtype, dst_dtype
-                )));
-            }
-        };
 
-        // Choose an optimal local workgroup size for this 1D element-wise op
+        if src_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU ReLU unimplemented for mixed DataType src:{:?}, dst:{:?}",
+                src_dtype, dst_dtype
+            )));
+        }
+
+        let op_name = GPUOperation::ReLU;
+
         let local_size = gpu.optimal_workgroup_size_1d(num_elements);
-        let binding_count = 2; // src, dst
 
-        // Bind pipeline first so descriptor push is associated with the correct layout
-        gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
+        gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
 
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
+
+        let pc_data = (num_elements as u32).to_ne_bytes();
+        gpu.bind_push_constants(command_buffer, op_name, &pc_data);
 
         gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);
 

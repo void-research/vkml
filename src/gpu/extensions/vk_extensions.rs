@@ -1,7 +1,7 @@
 use super::nv_coop_matrix2::CoopMatrixNV2Capabilities;
 use super::nv_coop_matrix2::query_cooperative_matrix_nv2_limits;
+use crate::utils::dtype::{bool_to_vk_bool32, vk_to_onnx_dtype};
 use crate::utils::error::VKMLError;
-use crate::utils::vk_to_onnx_dtype::{bool_to_vk_bool32, vk_to_onnx_dtype};
 use onnx_extractor::DataType;
 use std::any::Any;
 use std::ffi::{CStr, CString, c_void};

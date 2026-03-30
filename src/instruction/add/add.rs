@@ -132,62 +132,44 @@ impl Instruction for AddInstruction {
             && strides_a_usize[0] == 0
             && strides_b_usize[0] == 0;
 
-        // Choose operation and element size based on tensor DataType
         let src1_dtype = src1_desc.data_type();
         let src2_dtype = src2_desc.data_type();
         let dst_dtype = dst_desc.data_type();
-        let gpu_op = match (src1_dtype, src2_dtype, dst_dtype) {
-            (DataType::Float, DataType::Float, DataType::Float) => {
-                if use_nostride {
-                    GPUOperation::Addition_F32_F32_F32_NoStride
-                } else {
-                    GPUOperation::Addition_F32_F32_F32
-                }
-            }
-            (DataType::Float16, DataType::Float16, DataType::Float16) => {
-                GPUOperation::Addition_F16_F16_F16
-            }
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU Add unimplemented for DataType src1:{:?}, src2:{:?}, dst:{:?}",
-                    src1_dtype, src2_dtype, dst_dtype
-                )));
-            }
+
+        if src1_dtype != src2_dtype || src1_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Add unimplemented for mixed DataType src1:{:?}, src2:{:?}, dst:{:?}",
+                src1_dtype, src2_dtype, dst_dtype
+            )));
+        }
+
+        let op_name = if use_nostride {
+            GPUOperation::Addition_NoStride
+        } else {
+            GPUOperation::Addition
         };
 
-        // Quick removable performance test branch.
-        // Is safe as long as element count < local workgroup size count
-        if gpu_op == GPUOperation::Addition_F32_F32_F32_NoStride {
-            let local_size = gpu.optimal_workgroup_size_1d(total_elements);
-            let binding_count = 3; // src1, src2, dst
-            gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
+        let local_size = gpu.optimal_workgroup_size_1d(total_elements);
+
+        if use_nostride {
+            gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
             gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
 
             // Minimal check: use tensor shape as the source of truth for element count
             let num_elements: u64 = dst_dims_usize.iter().map(|d| *d as u64).product();
 
-            // Dispatch expects (command_buffer, local_size, work_size)
             gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);
 
             return Ok(());
         }
 
         // bind storage buffers (src1=0, src2=1, dst=2)
-        // Choose an optimal local workgroup size for this 1D element-wise op
-        let local_size = gpu.optimal_workgroup_size_1d(total_elements);
-
-        let binding_count = 3; // src1, src2, dst
-
-        // Bind pipeline first so descriptor push is associated with the pipeline layout
-        gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
+        gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
 
-        gpu.bind_push_constants(command_buffer, binding_count, push_constant_bytes);
+        gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
 
-        // Minimal check: use tensor shape as the source of truth for element count
         let num_elements: u64 = dst_dims_usize.iter().map(|d| *d as u64).product();
-
-        // Dispatch expects (command_buffer, local_size, work_size)
         gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);
 
         Ok(())

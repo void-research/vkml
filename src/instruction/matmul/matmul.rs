@@ -154,24 +154,18 @@ fn determine_operation(
 
     // Map (shape, datatypes) to GPUOperation
     match (src1_dtype, src2_dtype, dst_dtype) {
-        (DataType::Float, DataType::Float, DataType::Float) => match (a_rank, b_rank) {
-            (1, 2) => Ok(GPUOperation::MatMul1D2D_F32_F32_F32),
-            (2, 1) => Ok(GPUOperation::MatMul2D1D_F32_F32_F32),
-            (2, 2) => Ok(GPUOperation::MatMul2D2D_F32_F32_F32),
-            (2, 3) => Ok(GPUOperation::MatMul2D3D_F32_F32_F32),
-            (3, 2) => Ok(GPUOperation::MatMul3D2D_F32_F32_F32),
-            (3, 3) => Ok(GPUOperation::MatMul3D3D_F32_F32_F32),
-            (3, 1) => Ok(GPUOperation::MatMul3D1D_F32_F32_F32),
-            (1, 3) => Ok(GPUOperation::MatMul1D3D_F32_F32_F32),
+        (DataType::Float, DataType::Float, DataType::Float)
+        | (DataType::Float16, DataType::Float16, DataType::Float16) => match (a_rank, b_rank) {
+            (1, 2) => Ok(GPUOperation::MatMul_1D2D),
+            (2, 1) => Ok(GPUOperation::MatMul_2D1D),
+            (2, 2) => Ok(GPUOperation::MatMul_2D2D),
+            (2, 3) => Ok(GPUOperation::MatMul_2D3D),
+            (3, 2) => Ok(GPUOperation::MatMul_3D2D),
+            (3, 3) => Ok(GPUOperation::MatMul_3D3D),
+            (3, 1) => Ok(GPUOperation::MatMul_3D1D),
+            (1, 3) => Ok(GPUOperation::MatMul_1D3D),
             _ => Err(VKMLError::Instruction(format!(
                 "Unsupported MatMul dimensions: a_rank:{}, b_rank:{}",
-                a_rank, b_rank
-            ))),
-        },
-        (DataType::Float16, DataType::Float16, DataType::Float16) => match (a_rank, b_rank) {
-            (2, 2) => Ok(GPUOperation::MatMul2D2D_F16_F16_F16), // Will be replaced by coop matrix if available
-            _ => Err(VKMLError::Instruction(format!(
-                "Unsupported F16 MatMul dimensions: a_rank:{}, b_rank:{}",
                 a_rank, b_rank
             ))),
         },
@@ -201,10 +195,12 @@ fn execute_gpu_matmul(
     let src2_strides = src2_tensor.desc().strides();
     let dst_strides = dst_tensor.desc().strides();
 
+    let dst_dtype = dst_tensor.desc().data_type();
+
     // Configure based on operation type
     // Pass actual output dimensions to optimal_workgroup_size_* and dispatch
     let (local_size, push_constants_bytes, work_size) = match operation {
-        GPUOperation::MatMul1D2D_F32_F32_F32 => {
+        GPUOperation::MatMul_1D2D => {
             // [k] × [k,n] → [n]
             let k = src1_dims[0];
             let n = src2_dims[1];
@@ -225,7 +221,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul2D1D_F32_F32_F32 => {
+        GPUOperation::MatMul_2D1D => {
             // [m,k] × [k] → [m]
             let m = src1_dims[0];
             let k = src1_dims[1];
@@ -246,7 +242,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul2D2D_F32_F32_F32 | GPUOperation::MatMul2D2D_F16_F16_F16 => {
+        GPUOperation::MatMul_2D2D => {
             // [m,k] × [k,n] → [m,n]
             let m = src1_dims[0];
             let k = src1_dims[1];
@@ -271,7 +267,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul2D3D_F32_F32_F32 => {
+        GPUOperation::MatMul_2D3D => {
             // [m,k] × [batch,k,n] → [batch,m,n]
             let m = src1_dims[0];
             let k = src1_dims[1];
@@ -300,7 +296,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul3D2D_F32_F32_F32 => {
+        GPUOperation::MatMul_3D2D => {
             // [batch,m,k] × [k,n] → [batch,m,n]
             let batch = src1_dims[0];
             let m = src1_dims[1];
@@ -329,7 +325,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul3D3D_F32_F32_F32 => {
+        GPUOperation::MatMul_3D3D => {
             // [batch,m,k] × [batch,k,n] → [batch,m,n]
             let batch = src1_dims[0];
             let m = src1_dims[1];
@@ -359,7 +355,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul3D1D_F32_F32_F32 => {
+        GPUOperation::MatMul_3D1D => {
             // [batch,m,k] × [k] → [batch,m]
             let batch = src1_dims[0];
             let m = src1_dims[1];
@@ -384,7 +380,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul1D3D_F32_F32_F32 => {
+        GPUOperation::MatMul_1D3D => {
             // [k] × [batch,k,n] → [batch,n]
             let k = src1_dims[0];
             let batch = src2_dims[0];
@@ -417,136 +413,54 @@ fn execute_gpu_matmul(
         }
     };
 
-    // Cooperative matrix optimization for F16 2D×2D MatMul
-    if operation == GPUOperation::MatMul2D2D_F16_F16_F16
-        && gpu
-            .subgroup_supported_operations()
-            .contains(vk::SubgroupFeatureFlags::BASIC)
-        && let Some(coop_shapes) = gpu.extensions().get_coop_matrix_sizes(
-            DataType::Float16,
-            DataType::Float16,
-            DataType::Float16,
-            DataType::Float16,
-        )
-    {
-        // Check if 16x16x16 cooperative matrix is supported
-        let has_16x16x16 = coop_shapes
-            .iter()
-            .any(|shape| shape.m == 16 && shape.n == 16 && shape.k == 16);
-
-        if has_16x16x16 {
-            // Extract dimensions from push constants for cooperative matrix dispatch
-            let m = src1_dims[0];
-            let n = src2_dims[1];
-
-            // For cooperative matrices, workgroup size must equal subgroup size
-            let coop_local_size = [gpu.subgroup_size(), 1, 1];
-            let num_tiles_x = (n as usize).div_ceil(16); // ceil(n / 16)
-            let num_tiles_y = (m as usize).div_ceil(16); // ceil(m / 16)
-            let binding_count = 3; // src1, src2, dst
-
-            gpu.bind_compute_pipeline(
-                command_buffer,
-                GPUOperation::MatMul2D2D_F16_F16_F16_Coop_16_16_16,
-                coop_local_size,
-                binding_count,
-            );
-            gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
-            gpu.bind_push_constants(command_buffer, binding_count, &push_constants_bytes);
-
-            // Dispatch workgroups: one per tile
-            gpu.dispatch(
-                command_buffer,
-                coop_local_size,
-                [
-                    num_tiles_x as u64 * coop_local_size[0] as u64,
-                    num_tiles_y as u64 * coop_local_size[1] as u64,
-                    1,
-                ],
-            );
-
-            return Ok(());
-        }
-    }
-
-    // Optimized tiled shader for F32 2D×2D MatMul - select best variant
-    if operation == GPUOperation::MatMul2D2D_F32_F32_F32 {
+    // Optimized tiled shader for 2D×2D MatMul - select best variant
+    if operation == GPUOperation::MatMul_2D2D {
         let m = src1_dims[0] as u64;
         let n = src2_dims[1] as u64;
         let max_shmem = gpu.max_shared_memory_size();
 
         // Tile size selection: [tile_size, threads, shmem_required_bytes, operation]
         let variants = [
-            (
-                32,
-                [32, 32, 1],
-                8192,
-                GPUOperation::MatMul2D2D_F32_F32_F32_Tiled_32x32,
-            ),
-            (
-                16,
-                [16, 16, 1],
-                2048,
-                GPUOperation::MatMul2D2D_F32_F32_F32_Tiled_16x16,
-            ),
-            (
-                8,
-                [8, 8, 1],
-                512,
-                GPUOperation::MatMul2D2D_F32_F32_F32_Tiled_8x8,
-            ),
-            (
-                4,
-                [4, 4, 1],
-                128,
-                GPUOperation::MatMul2D2D_F32_F32_F32_Tiled_4x4,
-            ),
+            (32, [32, 32, 1], 8192, GPUOperation::MatMul_2D2D_Tiled),
+            (16, [16, 16, 1], 2048, GPUOperation::MatMul_2D2D_Tiled),
+            (8, [8, 8, 1], 512, GPUOperation::MatMul_2D2D_Tiled),
+            (4, [4, 4, 1], 128, GPUOperation::MatMul_2D2D_Tiled),
         ];
 
         // Select best tile size based on shared memory AND matrix dimensions
-        // Use both min and max dimensions to balance occupancy vs parallelism
-        let min_dim = m.min(n);
-        let max_dim = m.max(n);
-
         for (tile_size, local_size, shmem_req, op) in variants {
             if max_shmem >= shmem_req {
-                // Heuristic: check BOTH min and max dimensions
-                // - min_dim ensures we don't waste too many threads
-                // - max_dim ensures we have enough parallelism
-                let (min_threshold, max_threshold) = match tile_size {
-                    32 => (16, 256), // Conservative: avoid 32×32 for thin matrices
-                    16 => (1, 32),   // Permissive: 16×16 works well even for m=1 if n is large
-                    8 => (1, 8),     // Small tiles work for most cases
-                    4 => (0, 0),     // 4×4 always works (fallback)
-                    _ => (u64::MAX, u64::MAX),
+                let min_threshold = match tile_size {
+                    32 => 16,
+                    16 => 1,
+                    8 => 1,
+                    _ => 0,
+                };
+                let max_threshold = match tile_size {
+                    32 => 256,
+                    16 => 32,
+                    8 => 8,
+                    _ => 0,
                 };
 
+                let min_dim = m.min(n);
+                let max_dim = m.max(n);
+
                 if min_dim >= min_threshold && max_dim >= max_threshold {
-                    // Use this variant
-                    let tiled_local_size = local_size;
-                    let binding_count = 3;
-
-                    gpu.bind_compute_pipeline(command_buffer, op, tiled_local_size, binding_count);
+                    gpu.bind_slang_compute_pipeline(command_buffer, op, dst_dtype, local_size);
                     gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
-                    gpu.bind_push_constants(command_buffer, binding_count, &push_constants_bytes);
-
-                    // Dispatch with work_size in terms of work items (threads), not workgroups
-                    gpu.dispatch(command_buffer, tiled_local_size, [n, m, 1]);
-
+                    gpu.bind_push_constants(command_buffer, operation, &push_constants_bytes);
+                    gpu.dispatch(command_buffer, local_size, [n, m, 1]);
                     return Ok(());
                 }
             }
         }
-        // else: Fall through to standard pipeline if insufficient shared memory for even 4x4
     }
 
     // Standard pipeline path
-    let binding_count = 3; // src1, src2, dst
-    gpu.bind_compute_pipeline(command_buffer, operation, local_size, binding_count);
+    gpu.bind_slang_compute_pipeline(command_buffer, operation, dst_dtype, local_size);
     gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
-
-    gpu.bind_push_constants(command_buffer, binding_count, &push_constants_bytes);
-
+    gpu.bind_push_constants(command_buffer, operation, &push_constants_bytes);
     gpu.dispatch(command_buffer, local_size, work_size);
 
     Ok(())

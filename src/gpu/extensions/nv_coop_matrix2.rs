@@ -1,4 +1,4 @@
-use crate::utils::vk_to_onnx_dtype::{vk_bool32_to_bool, vk_to_onnx_dtype};
+use crate::utils::dtype::{vk_bool32_to_bool, vk_to_onnx_dtype};
 use onnx_extractor::DataType;
 use std::ptr;
 use vulkanalia::vk::{InstanceV1_0, InstanceV1_1};

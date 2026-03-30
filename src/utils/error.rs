@@ -28,6 +28,9 @@ pub enum VKMLError {
 
     #[error("Onnx Importer error: {0}")]
     OnnxImporter(String),
+
+    #[error("Slang error: {0}")]
+    Slang(String),
 }
 
 // Convert vk::Result (Vulkan return codes) into VKMLError

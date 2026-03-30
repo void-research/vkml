@@ -128,24 +128,23 @@ impl Instruction for DivInstruction {
         let src1_dtype = src1_desc.data_type();
         let src2_dtype = src2_desc.data_type();
         let dst_dtype = dst_desc.data_type();
-        let gpu_op = match (src1_dtype, src2_dtype, dst_dtype) {
-            (DataType::Float, DataType::Float, DataType::Float) => GPUOperation::Divide_F32_F32_F32,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU Div unimplemented for DataType src1:{:?}, src2:{:?}, dst:{:?}",
-                    src1_dtype, src2_dtype, dst_dtype
-                )));
-            }
-        };
+
+        if src1_dtype != src2_dtype || src1_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Div unimplemented for mixed DataType src1:{:?}, src2:{:?}, dst:{:?}",
+                src1_dtype, src2_dtype, dst_dtype
+            )));
+        }
+
+        let op_name = GPUOperation::Divide;
 
         // Choose a 1D local workgroup size and bind pipeline/descriptors
         let local_size = gpu.optimal_workgroup_size_1d(total_elements);
-        let binding_count = 3; // src1, src2, dst
 
-        gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
+        gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
 
-        gpu.bind_push_constants(command_buffer, binding_count, push_constant_bytes);
+        gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
 
         // Dispatch: dispatch computes num workgroups from local_size and work_size
         let num_elements: u64 = dst_dims.iter().map(|d| *d as u64).product();

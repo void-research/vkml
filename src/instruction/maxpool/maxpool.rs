@@ -89,7 +89,6 @@ impl Instruction for MaxPoolInstruction {
         let dst_mem = dst_tensor.get_gpu_memory_or_panic();
 
         let src_desc = src_tensor.desc();
-        let binding_count = 2; // src, dst
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
 
         // choose shader based on spatial rank
@@ -136,18 +135,17 @@ impl Instruction for MaxPoolInstruction {
 
                 let src_dtype = src_desc.data_type();
                 let dst_dtype = dst_desc.data_type();
-                let gpu_op = match (src_dtype, dst_dtype) {
-                    (DataType::Float, DataType::Float) => GPUOperation::MaxPool1D_F32_F32,
-                    _ => {
-                        return Err(VKMLError::Instruction(format!(
-                            "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
-                            src_dtype, dst_dtype
-                        )));
-                    }
-                };
+                if src_dtype != dst_dtype {
+                    return Err(VKMLError::Instruction(format!(
+                        "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
+                        src_dtype, dst_dtype
+                    )));
+                }
 
-                gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
-                gpu.bind_push_constants(command_buffer, binding_count, push_constant_bytes);
+                let gpu_op = GPUOperation::MaxPool_1D;
+
+                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
+                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
 
                 gpu.dispatch(command_buffer, local_size, [total, 1, 1]);
             }
@@ -184,19 +182,17 @@ impl Instruction for MaxPoolInstruction {
 
                 let src_dtype = src_desc.data_type();
                 let dst_dtype = dst_desc.data_type();
-                let gpu_op = match (src_dtype, dst_dtype) {
-                    (DataType::Float, DataType::Float) => GPUOperation::MaxPool2D_F32_F32,
-                    (DataType::Float16, DataType::Float16) => GPUOperation::MaxPool2D_F16_F16,
-                    _ => {
-                        return Err(VKMLError::Instruction(format!(
-                            "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
-                            src_dtype, dst_dtype
-                        )));
-                    }
-                };
+                if src_dtype != dst_dtype {
+                    return Err(VKMLError::Instruction(format!(
+                        "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
+                        src_dtype, dst_dtype
+                    )));
+                }
 
-                gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
-                gpu.bind_push_constants(command_buffer, binding_count, push_constant_bytes);
+                let gpu_op = GPUOperation::MaxPool_2D;
+
+                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
+                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
 
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, batch_nc]);
             }
@@ -240,18 +236,17 @@ impl Instruction for MaxPoolInstruction {
 
                 let src_dtype = src_desc.data_type();
                 let dst_dtype = dst_desc.data_type();
-                let gpu_op = match (src_dtype, dst_dtype) {
-                    (DataType::Float, DataType::Float) => GPUOperation::MaxPool3D_F32_F32,
-                    _ => {
-                        return Err(VKMLError::Instruction(format!(
-                            "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
-                            src_dtype, dst_dtype
-                        )));
-                    }
-                };
+                if src_dtype != dst_dtype {
+                    return Err(VKMLError::Instruction(format!(
+                        "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
+                        src_dtype, dst_dtype
+                    )));
+                }
 
-                gpu.bind_compute_pipeline(command_buffer, gpu_op, local_size, binding_count);
-                gpu.bind_push_constants(command_buffer, binding_count, push_constant_bytes);
+                let gpu_op = GPUOperation::MaxPool_3D;
+
+                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
+                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
 
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, total_z]);
             }
