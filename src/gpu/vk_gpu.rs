@@ -11,8 +11,10 @@ use vulkanalia::{
 };
 
 use crate::{
-    compute::memory_tracker::MemoryTracker, gpu::workgroup::optimal_workgroup_size,
-    instruction::GPUOperation, utils::error::VKMLError,
+    compute::memory_tracker::MemoryTracker,
+    gpu::{slang_compiler, workgroup::optimal_workgroup_size},
+    instruction::GPUOperation,
+    utils::error::VKMLError,
 };
 
 use super::VkExtensions;
@@ -443,7 +445,7 @@ impl Gpu {
             return pipeline;
         }
 
-        let compiled_spirv = crate::gpu::slang_compiler::compile(op, dtype, local_size)
+        let compiled_spirv = slang_compiler::compile(op, dtype, local_size)
             .unwrap_or_else(|e| panic!("Slang compilation failed for {:?}: {}", op, e));
 
         let pipeline = self
