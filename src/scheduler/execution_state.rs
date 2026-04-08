@@ -35,8 +35,6 @@ impl ExecutionState {
 
         let outputs_remaining_init = plan.output_chunks.len();
 
-        let manager_ptr = NonNull::from(manager);
-
         let state = Arc::new_cyclic(move |weak_self| {
             let chunk_task_params = (0..plan.total_chunks())
                 .map(|chunk_id| ChunkTaskParams {
@@ -47,7 +45,7 @@ impl ExecutionState {
 
             ExecutionState {
                 plan,
-                compute_manager: manager_ptr,
+                compute_manager: NonNull::from(manager),
                 chunk_dependencies_remaining,
                 outputs_remaining: AtomicUsize::new(outputs_remaining_init),
                 main_thread: std::thread::current(),
