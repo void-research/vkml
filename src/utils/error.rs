@@ -31,6 +31,9 @@ pub enum VKMLError {
 
     #[error("Slang error: {0}")]
     Slang(String),
+
+    #[error("spirv-opt error: {0}")]
+    SpirvOpt(String),
 }
 
 // Convert vk::Result (Vulkan return codes) into VKMLError
