@@ -1,14 +1,9 @@
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use vkml::{ComputeManager, Tensor};
 
-fn get_test_data_path(file: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("data")
-        .join(file)
-}
+use crate::common::get_test_data_path;
 
 /// Helper: load a PNG and return bytes matching the model input tensor size.
 fn load_image_as_input(path: &Path) -> Box<[u8]> {

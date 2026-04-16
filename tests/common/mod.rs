@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 pub fn assert_tensors_close(actual: &[f32], expected: &[f32], rtol: f32, atol: f32, name: &str) {
     assert_eq!(
         actual.len(),
@@ -44,4 +46,11 @@ pub fn assert_tensors_close(actual: &[f32], expected: &[f32], rtol: f32, atol: f
             name, failure_count, max_abs_error
         );
     }
+}
+
+pub fn get_test_data_path(file: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join(file)
 }

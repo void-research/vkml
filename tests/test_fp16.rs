@@ -1,15 +1,10 @@
 mod common;
 
 use half::f16;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use vkml::{ComputeManager, Tensor};
 
-fn get_test_data_path(file: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("data")
-        .join(file)
-}
+use crate::common::get_test_data_path;
 
 fn load_image_as_input_fp16(path: &Path) -> Box<[u8]> {
     let raw = image::open(path)
