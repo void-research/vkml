@@ -25,3 +25,4 @@ shader-slang-sys = "0.1.0"
 
 #[dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
+half = { version = "2", features = ["bytemuck"] }
