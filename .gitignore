@@ -1,4 +1,6 @@
 /target
 /.cargo
 Cargo.lock
+
+/src/bin
 /docs
