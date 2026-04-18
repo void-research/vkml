@@ -225,6 +225,6 @@ fn load_module_from_source(
 
         let module_unknown: IUnknown =
             std::mem::transmute(NonNull::new_unchecked(module_ptr as *mut c_void));
-        Ok(std::mem::transmute(module_unknown))
+        Ok(std::mem::transmute::<IUnknown, Module>(module_unknown))
     }
 }

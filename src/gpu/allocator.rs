@@ -59,10 +59,10 @@ impl GpuAllocator {
     }
 
     pub fn direct_host_mode(&self) -> bool {
-        match self.host_access_mode() {
-            HostAccessMode::DirectAllHostVisible => true,
-            _ => false,
-        }
+        matches!(
+            self.host_access_mode(),
+            HostAccessMode::DirectAllHostVisible
+        )
     }
 
     pub fn set_host_visible_reserved(&self, bytes: u64) {

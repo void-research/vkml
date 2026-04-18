@@ -1,7 +1,8 @@
+use crate::VKMLError;
+
 #[allow(non_camel_case_types)]
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
 pub enum GPUOperation {
-    // Slang fully dynamic generic variants
     Addition,
     Addition_NoStride,
     Subtract,
@@ -107,7 +108,7 @@ impl GPUOperation {
         }
     }
 
-    pub fn to_slang_shader(&self) -> Result<&'static [u8], crate::utils::error::VKMLError> {
+    pub fn to_slang_shader(self) -> Result<&'static [u8], VKMLError> {
         match self {
             GPUOperation::Addition => Ok(include_bytes!("add/add.slang")),
             GPUOperation::Addition_NoStride => Ok(include_bytes!("add/add_nostride.slang")),
