@@ -94,7 +94,7 @@ pub fn compile(
     let session = ctx.session.lock().unwrap();
 
     let module = load_module_from_source(&session, &module_name, &virtual_path, &source)
-        .map_err(|e| VKMLError::Slang(e))?;
+        .map_err(VKMLError::Slang)?;
 
     let entry_point = module.find_entry_point_by_name("main").ok_or_else(|| {
         VKMLError::Slang(format!(
@@ -145,7 +145,7 @@ fn spirv_opt_pass(spirv: &[u8]) -> Result<Vec<u8>, VKMLError> {
             .stdin
             .as_mut()
             .ok_or_else(|| VKMLError::SpirvOpt("Failed to open stdin for spirv-opt".to_string()))?;
-        stdin.write_all(&spirv).map_err(|e| {
+        stdin.write_all(spirv).map_err(|e| {
             VKMLError::SpirvOpt(format!("Failed to write to spirv-opt stdin: {}", e))
         })?;
     }

@@ -242,14 +242,14 @@ impl ComputeManager {
                             // unallocated -> will be allocated here
                             needed = needed.saturating_add(tensor_size(tid));
                         }
-                        Some(loc) if loc != cand_device => {
+                        Some(loc)
+                            if loc != cand_device
                             // already allocated elsewhere -> we need to create a remapped tensor here
-                            if !tensor_remappings[tid]
+                            && !tensor_remappings[tid]
                                 .iter()
-                                .any(|(dev, _)| dev == cand_device)
-                            {
-                                needed = needed.saturating_add(tensor_size(tid));
-                            }
+                                .any(|(dev, _)| dev == cand_device) =>
+                        {
+                            needed = needed.saturating_add(tensor_size(tid));
                         }
                         _ => {}
                     }
@@ -261,13 +261,13 @@ impl ComputeManager {
                         None => {
                             needed = needed.saturating_add(tensor_size(tid));
                         }
-                        Some(loc) if loc != cand_device => {
-                            if !tensor_remappings[tid]
-                                .iter()
-                                .any(|(dev, _)| dev == cand_device)
-                            {
-                                needed = needed.saturating_add(tensor_size(tid));
-                            }
+                        Some(loc)
+                            if loc != cand_device
+                                && !tensor_remappings[tid]
+                                    .iter()
+                                    .any(|(dev, _)| dev == cand_device) =>
+                        {
+                            needed = needed.saturating_add(tensor_size(tid));
                         }
                         _ => {}
                     }
@@ -331,7 +331,7 @@ impl ComputeManager {
                             new_tensors.push((tensor_desc, current_device, original_layer_id));
 
                             // create transfer instruction from src -> dst and schedule it before this op
-                            let src_device = tensor_locations[tid].clone().unwrap();
+                            let src_device = tensor_locations[tid].unwrap();
                             let transfer_instr = instruction::transfer(
                                 tid,
                                 new_tensor_id,
@@ -781,11 +781,8 @@ fn single_allocate_task(params: &SingleAllocParams) {
 
     let desc: &TensorDesc = &manager.tensor_graph.tensor_descs[params.index];
 
-    let target = unsafe {
-        (*params.tensor_locations_ptr.add(params.index))
-            .clone()
-            .unwrap_or(DeviceId::Cpu)
-    };
+    let target =
+        unsafe { (*params.tensor_locations_ptr.add(params.index)).unwrap_or(DeviceId::Cpu) };
 
     // Read host-visible decision for this tensor from the shared array
     let host_visible = unsafe { *params.host_visible_plan_ptr.add(params.index) };
