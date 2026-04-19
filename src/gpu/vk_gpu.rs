@@ -445,11 +445,11 @@ impl Gpu {
             return pipeline;
         }
 
-        let compiled_spirv = slang_compiler::compile(op, dtype, local_size)
+        let compiled_blob = slang_compiler::compile(op, dtype, local_size)
             .unwrap_or_else(|e| panic!("Slang compilation failed for {:?}: {}", op, e));
 
         let pipeline = self
-            .create_pipeline(&compiled_spirv, local_size, op.binding_count())
+            .create_pipeline(compiled_blob.as_slice(), local_size, op.binding_count())
             .unwrap_or_else(|_| {
                 panic!(
                     "Slang Pipeline creation failed for {:?} with workgroup {:?}",
