@@ -37,14 +37,16 @@ pub static SLANG_CONTEXT: LazyLock<SlangContext> = LazyLock::new(|| {
     let options = CompilerOptions::default()
         .matrix_layout_row(true)
         .optimization(OptimizationLevel::Maximal)
-        .floating_point_mode(FloatingPointMode::Fast);
+        .floating_point_mode(FloatingPointMode::Fast)
+        .emit_spirv_directly(true)
+        .skip_spirv_validation(true)
+        .glsl_force_scalar_layout(true);
 
     let targets = [TargetDesc::default()
         .format(CompileTarget::Spirv)
         .profile(profile)
         .options(&options)];
 
-    // unsure if need to pass &options twice
     let session_desc = SessionDesc::default().targets(&targets).options(&options);
 
     let session = global
@@ -161,6 +163,12 @@ pub fn load_module_from_source(
 
         // diagnostics might contain warnings even on success
         vcall_release(diagnostics as *mut _);
+
+        // addRef: loadModuleFromSourceString returns a session-owned (borrowed)
+        // reference. We must increment the ref count to take our own ownership,
+        // since wrapping in IUnknown will call release() on drop.
+        let module_vtable_ptr = *(module_ptr as *mut *mut ISlangUnknown__bindgen_vtable);
+        ((*module_vtable_ptr).ISlangUnknown_addRef)(module_ptr as *mut _);
 
         let module_unknown: IUnknown =
             std::mem::transmute(NonNull::new_unchecked(module_ptr as *mut c_void));
