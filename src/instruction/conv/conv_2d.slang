@@ -30,16 +30,16 @@ struct PushConstants
 PushConstants pc;
 
 [[vk::binding(0)]]
-RWStructuredBuffer<DTYPE> src;
+StructuredBuffer<DTYPE> src;
 
 [[vk::binding(1)]]
-RWStructuredBuffer<DTYPE> weight;
+StructuredBuffer<DTYPE> weight;
 
 [[vk::binding(2)]]
 RWStructuredBuffer<DTYPE> dst;
 
 [[vk::binding(3)]]
-RWStructuredBuffer<DTYPE> bias;
+StructuredBuffer<DTYPE> bias;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]

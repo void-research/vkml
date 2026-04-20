@@ -21,7 +21,7 @@ struct PushConstants
 PushConstants pc;
 
 [[vk::binding(0)]]
-RWStructuredBuffer<DTYPE> src;
+StructuredBuffer<DTYPE> src;
 
 [[vk::binding(1)]]
 RWStructuredBuffer<DTYPE> dst;
