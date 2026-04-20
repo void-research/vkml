@@ -19,10 +19,10 @@ struct PushConstants
 PushConstants pc;
 
 [[vk::binding(0)]]
-StructuredBuffer<DTYPE> a;
+StructuredBuffer<DTYPE> src;
 
 [[vk::binding(1)]]
-RWStructuredBuffer<DTYPE> b;
+RWStructuredBuffer<DTYPE> dst;
 
 groupshared DTYPE subgroup_maxes[64]; // Max supported subgroups
 groupshared DTYPE subgroup_sums[64];
@@ -45,7 +45,7 @@ void main(uint3 threadId: SV_GroupThreadID, uint3 groupId: SV_GroupID)
     DTYPE local_max = DTYPE(-3.402823466e+38); // -FLT_MAX
     for (uint i = local_id; i < pc.feature_size; i += WORKGROUP_SIZE_X)
     {
-        local_max = max(local_max, a[base_idx + i]);
+        local_max = max(local_max, src[base_idx + i]);
     }
 
     // Reduce within subgroup
@@ -80,8 +80,8 @@ void main(uint3 threadId: SV_GroupThreadID, uint3 groupId: SV_GroupID)
     for (uint i = local_id; i < pc.feature_size; i += WORKGROUP_SIZE_X)
     {
         uint idx = base_idx + i;
-        DTYPE exp_val = exp(a[idx] - max_val);
-        b[idx] = exp_val;
+        DTYPE exp_val = exp(src[idx] - max_val);
+        dst[idx] = exp_val;
         local_sum += exp_val;
     }
 
@@ -114,6 +114,6 @@ void main(uint3 threadId: SV_GroupThreadID, uint3 groupId: SV_GroupID)
     for (uint i = local_id; i < pc.feature_size; i += WORKGROUP_SIZE_X)
     {
         uint idx = base_idx + i;
-        b[idx] /= sum;
+        dst[idx] /= sum;
     }
 }

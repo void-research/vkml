@@ -19,10 +19,10 @@ struct PushConstants
 PushConstants pc;
 
 [[vk::binding(0)]]
-StructuredBuffer<DTYPE> a;
+StructuredBuffer<DTYPE> src;
 
 [[vk::binding(1)]]
-RWStructuredBuffer<DTYPE> b;
+RWStructuredBuffer<DTYPE> dst;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, 1, 1)]
@@ -49,7 +49,7 @@ void main(uint3 threadId: SV_GroupThreadID, uint3 groupId: SV_GroupID)
     // Find maximum in this batch (for numerical stability)
     for (uint i = local_id; i < pc.feature_size; i += WORKGROUP_SIZE_X)
     {
-        max_vals[local_id] = max(max_vals[local_id], a[base_idx + i]);
+        max_vals[local_id] = max(max_vals[local_id], src[base_idx + i]);
     }
 
     // Reduction to find the maximum
@@ -69,8 +69,8 @@ void main(uint3 threadId: SV_GroupThreadID, uint3 groupId: SV_GroupID)
     for (uint i = local_id; i < pc.feature_size; i += WORKGROUP_SIZE_X)
     {
         uint idx = base_idx + i;
-        DTYPE exp_val = exp(a[idx] - max_val);
-        b[idx] = exp_val;
+        DTYPE exp_val = exp(src[idx] - max_val);
+        dst[idx] = exp_val;
         sum_vals[local_id] += exp_val;
     }
 
@@ -90,6 +90,6 @@ void main(uint3 threadId: SV_GroupThreadID, uint3 groupId: SV_GroupID)
     for (uint i = local_id; i < pc.feature_size; i += WORKGROUP_SIZE_X)
     {
         uint idx = base_idx + i;
-        b[idx] /= sum;
+        dst[idx] /= sum;
     }
 }

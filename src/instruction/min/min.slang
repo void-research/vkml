@@ -23,11 +23,11 @@ struct PushConstants
 PushConstants pc;
 
 [[vk::binding(0)]]
-StructuredBuffer<DTYPE> a;
+StructuredBuffer<DTYPE> src1;
 [[vk::binding(1)]]
-StructuredBuffer<DTYPE> b;
+StructuredBuffer<DTYPE> src2;
 [[vk::binding(2)]]
-RWStructuredBuffer<DTYPE> c;
+RWStructuredBuffer<DTYPE> dst;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
@@ -50,5 +50,5 @@ void main(uint3 threadId: SV_DispatchThreadID)
         offB += r * pc.strides_b[i];
     }
 
-    c[gid] = min(a[offA], b[offB]);
+    dst[gid] = min(src1[offA], src2[offB]);
 }

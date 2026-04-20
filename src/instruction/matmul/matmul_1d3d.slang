@@ -26,13 +26,13 @@ struct PushConstants
 PushConstants pc;
 
 [[vk::binding(0)]]
-StructuredBuffer<DTYPE> a;
+StructuredBuffer<DTYPE> src1;
 
 [[vk::binding(1)]]
-StructuredBuffer<DTYPE> b;
+StructuredBuffer<DTYPE> src2;
 
 [[vk::binding(2)]]
-RWStructuredBuffer<DTYPE> c;
+RWStructuredBuffer<DTYPE> dst;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
@@ -52,9 +52,9 @@ void main(uint3 threadId: SV_DispatchThreadID)
     {
         uint a_idx = i * pc.stride_a;
         uint b_idx = batch * pc.stride_b0 + i * pc.stride_b1 + col * pc.stride_b2;
-        sum += a[a_idx] * b[b_idx];
+        sum += src1[a_idx] * src2[b_idx];
     }
 
     uint c_idx = batch * pc.stride_c0 + col * pc.stride_c1;
-    c[c_idx] = sum;
+    dst[c_idx] = sum;
 }

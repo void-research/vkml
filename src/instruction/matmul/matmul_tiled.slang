@@ -26,13 +26,13 @@ struct PushConstants
 PushConstants pc;
 
 [[vk::binding(0)]]
-StructuredBuffer<DTYPE> a;
+StructuredBuffer<DTYPE> src1;
 
 [[vk::binding(1)]]
-StructuredBuffer<DTYPE> b;
+StructuredBuffer<DTYPE> src2;
 
 [[vk::binding(2)]]
-RWStructuredBuffer<DTYPE> c;
+RWStructuredBuffer<DTYPE> dst;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
@@ -56,7 +56,7 @@ void main(uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
     {
         if (out_row < pc.m && out_col < pc.n)
         {
-            c[out_row * pc.stride_c0 + out_col * pc.stride_c1] = DTYPE(0.0);
+            dst[out_row * pc.stride_c0 + out_col * pc.stride_c1] = DTYPE(0.0);
         }
         return;
     }
@@ -73,11 +73,11 @@ void main(uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
         uint row_b = k_offset + thread_row;
 
         tileA[idx] = (out_row < pc.m && col_a < pc.k)
-                         ? a[out_row * pc.stride_a0 + col_a * pc.stride_a1]
+                         ? src1[out_row * pc.stride_a0 + col_a * pc.stride_a1]
                          : DTYPE(0.0);
 
         tileB[idx] = (row_b < pc.k && out_col < pc.n)
-                         ? b[row_b * pc.stride_b0 + out_col * pc.stride_b1]
+                         ? src2[row_b * pc.stride_b0 + out_col * pc.stride_b1]
                          : DTYPE(0.0);
 
         GroupMemoryBarrierWithGroupSync();
@@ -93,6 +93,6 @@ void main(uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
 
     if (out_row < pc.m && out_col < pc.n)
     {
-        c[out_row * pc.stride_c0 + out_col * pc.stride_c1] = acc;
+        dst[out_row * pc.stride_c0 + out_col * pc.stride_c1] = acc;
     }
 }

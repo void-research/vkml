@@ -23,7 +23,7 @@ PushConstants pc;
 
 // We write pairs of uints (low, high) to form 64-bit bounds
 [[vk::binding(0)]]
-RWStructuredBuffer<uint> data;
+RWStructuredBuffer<uint> dst;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
@@ -41,6 +41,6 @@ void main(uint3 threadId: SV_DispatchThreadID)
 
     // Little endian 64-bit word format packing
     uint out_idx = idx * 2u;
-    data[out_idx] = low;
-    data[out_idx + 1u] = high;
+    dst[out_idx] = low;
+    dst[out_idx + 1u] = high;
 }

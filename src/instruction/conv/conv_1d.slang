@@ -31,7 +31,7 @@ PushConstants pc;
 StructuredBuffer<DTYPE> src;
 
 [[vk::binding(1)]]
-StructuredBuffer<DTYPE> weight;
+StructuredBuffer<DTYPE> weights;
 
 [[vk::binding(2)]]
 RWStructuredBuffer<DTYPE> dst;
@@ -72,7 +72,7 @@ void main(uint3 threadId: SV_DispatchThreadID)
             uint ic_in_group = ic - c_start;
             uint w_off = ((oc * c_per_group + ic_in_group) * pc.kernel) + k;
 
-            acc += src[src_off] * weight[w_off];
+            acc += src[src_off] * weights[w_off];
         }
     }
 

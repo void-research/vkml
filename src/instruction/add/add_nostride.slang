@@ -10,16 +10,16 @@ const int WORKGROUP_SIZE_Y = 1;
 const int WORKGROUP_SIZE_Z = 1;
 
 [[vk::binding(0)]]
-StructuredBuffer<DTYPE> a;
+StructuredBuffer<DTYPE> src1;
 [[vk::binding(1)]]
-StructuredBuffer<DTYPE> b;
+StructuredBuffer<DTYPE> src2;
 [[vk::binding(2)]]
-RWStructuredBuffer<DTYPE> c;
+RWStructuredBuffer<DTYPE> dst;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main(uint3 threadId: SV_DispatchThreadID)
 {
     uint gid = threadId.x;
-    c[gid] = a[gid] + b[gid];
+    dst[gid] = src1[gid] + src2[gid];
 }

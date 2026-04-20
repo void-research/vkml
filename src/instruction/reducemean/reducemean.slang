@@ -19,10 +19,10 @@ struct PushConstants
 PushConstants pc;
 
 [[vk::binding(0)]]
-StructuredBuffer<DTYPE> a;
+StructuredBuffer<DTYPE> src;
 
 [[vk::binding(1)]]
-RWStructuredBuffer<DTYPE> b;
+RWStructuredBuffer<DTYPE> dst;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
@@ -37,8 +37,8 @@ void main(uint3 threadId: SV_DispatchThreadID)
     DTYPE sum = DTYPE(0.0);
     for (uint i = 0u; i < pc.reduction_size; ++i)
     {
-        sum += a[base + i];
+        sum += src[base + i];
     }
 
-    b[gid] = sum / DTYPE(pc.reduction_size);
+    dst[gid] = sum / DTYPE(pc.reduction_size);
 }
