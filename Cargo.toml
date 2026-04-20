@@ -20,7 +20,6 @@ sys-info = "0.9"
 bytemuck = "1"
 zero-pool = "0.8"
 onnx-extractor = "0.3"
-shader-slang = "0.1"
 shader-slang-sys = "0.1"
 
 #[dev-dependencies]

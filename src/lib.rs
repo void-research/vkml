@@ -6,6 +6,8 @@
 
 mod utils;
 
+mod slang;
+
 mod gpu;
 
 mod compute;

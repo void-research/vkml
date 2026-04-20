@@ -11,10 +11,8 @@ use vulkanalia::{
 };
 
 use crate::{
-    compute::memory_tracker::MemoryTracker,
-    gpu::{slang_compiler, workgroup::optimal_workgroup_size},
-    instruction::GPUOperation,
-    utils::error::VKMLError,
+    compute::memory_tracker::MemoryTracker, gpu::workgroup::optimal_workgroup_size,
+    instruction::GPUOperation, slang::compiler as slang_compiler, utils::error::VKMLError,
 };
 
 use super::VkExtensions;
