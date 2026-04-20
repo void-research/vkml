@@ -61,8 +61,6 @@ pub fn compile(op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
     let once_lock = &SLANG_CONTEXT.blob_cache[op as usize][dtype as usize];
 
     let blob = once_lock.get_or_try_init(|| -> Result<Blob, VKMLError> {
-        let session = SLANG_CONTEXT.session.lock().unwrap();
-
         let source_bytes = op.to_slang_shader()?;
         let source_string = std::str::from_utf8(source_bytes)
             .map_err(|e| VKMLError::Slang(format!("Shader source is not UTF-8: {}", e)))?;
@@ -75,6 +73,8 @@ pub fn compile(op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
         source.push_str(source_string);
 
         let virtual_path = format!("{}.slang", module_name);
+
+        let session = SLANG_CONTEXT.session.lock().unwrap();
 
         let module = load_module_from_source(&session, &module_name, &virtual_path, &source)
             .map_err(VKMLError::Slang)?;
