@@ -1,3 +1,7 @@
+#ifndef DTYPE
+#define DTYPE float
+#endif
+
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]

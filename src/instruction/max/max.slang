@@ -1,3 +1,7 @@
+#ifndef DTYPE
+#define DTYPE float
+#endif
+
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]
@@ -18,13 +22,16 @@ struct PushConstants
 [[vk::push_constant]]
 PushConstants pc;
 
+[[vk::binding(0)]]
+StructuredBuffer<DTYPE> a;
+[[vk::binding(1)]]
+StructuredBuffer<DTYPE> b;
+[[vk::binding(2)]]
+RWStructuredBuffer<DTYPE> c;
+
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(
-    StructuredBuffer<DTYPE> a,
-    StructuredBuffer<DTYPE> b,
-    RWStructuredBuffer<DTYPE> c,
-    uint3 threadId: SV_DispatchThreadID)
+void main(uint3 threadId: SV_DispatchThreadID)
 {
     uint gid = threadId.x;
     uint total = pc.total;
