@@ -102,7 +102,6 @@ void main(uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
 
         GroupMemoryBarrierWithGroupSync();
 
-        [unroll]
         for (uint ki = 0; ki < TILE_SIZE; ki++)
         {
             acc += tileA[thread_row * TILE_SIZE + ki] * tileB[ki * TILE_SIZE + thread_col];
