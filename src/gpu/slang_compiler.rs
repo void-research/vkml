@@ -11,107 +11,97 @@ use shader_slang_sys::{
 };
 use std::ffi::{CString, c_void};
 use std::fmt::Write;
+use std::mem::variant_count;
 
 use std::ptr::NonNull;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
-/// Global Slang state container.
-///
-/// NOTE: The `session` MUST be protected by a Mutex because Slang's `ISession`
-/// internal dictionaries and reflection caches are NOT thread-safe for concurrent
-/// module loading or linking. Reusing a session is significantly faster and
-/// more memory-efficient than creating one per compilation.
+const NUM_DTYPES: usize = variant_count::<DataType>();
+const NUM_OPS: usize = variant_count::<GPUOperation>();
+
+/// the session must be protected by a mutex because slangs ISession
+/// internal dictionaries and reflection caches are not thread-safe
 pub struct SlangContext {
     pub session: Mutex<Session>,
+    pub blob_cache: [[OnceLock<Blob>; NUM_DTYPES]; NUM_OPS],
 }
 
 unsafe impl Send for SlangContext {}
 unsafe impl Sync for SlangContext {}
 
-pub static SLANG_CONTEXT: OnceLock<SlangContext> = OnceLock::new();
+pub static SLANG_CONTEXT: LazyLock<SlangContext> = LazyLock::new(|| {
+    let global = GlobalSession::new().expect("Failed to initialise Slang GlobalSession");
+    let profile = global.find_profile("spirv_1_6");
 
-pub fn get_context() -> &'static SlangContext {
-    SLANG_CONTEXT.get_or_init(|| {
-        let global = GlobalSession::new().expect("Failed to initialize Slang GlobalSession");
-        let profile = global.find_profile("spirv_1_6");
+    // if maximal breaks something, can go back to high
+    let options = CompilerOptions::default()
+        .matrix_layout_row(true)
+        .optimization(OptimizationLevel::Maximal)
+        .floating_point_mode(FloatingPointMode::Fast);
 
-        // if maximal breaks something, can go back to high
-        let options = CompilerOptions::default()
-            .matrix_layout_row(true)
-            .optimization(OptimizationLevel::Maximal)
-            .floating_point_mode(FloatingPointMode::Fast);
+    let targets = [TargetDesc::default()
+        .format(CompileTarget::Spirv)
+        .profile(profile)
+        .options(&options)];
 
-        let targets = [TargetDesc::default()
-            .format(CompileTarget::Spirv)
-            .profile(profile)
-            .options(&options)];
+    // unsure if need to pass &options twice
+    let session_desc = SessionDesc::default().targets(&targets).options(&options);
 
-        // unsure if need to pass &options twice
-        let session_desc = SessionDesc::default().targets(&targets).options(&options);
+    let session = global
+        .create_session(&session_desc)
+        .expect("Failed to create persistent Slang Session");
 
-        let session = global
-            .create_session(&session_desc)
-            .expect("Failed to create persistent Slang Session");
+    SlangContext {
+        session: Mutex::new(session),
+        blob_cache: [const { [const { OnceLock::new() }; NUM_DTYPES] }; NUM_OPS],
+    }
+});
 
-        SlangContext {
-            session: Mutex::new(session),
-        }
-    })
-}
+pub fn compile(op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
+    let once_lock = &SLANG_CONTEXT.blob_cache[op as usize][dtype as usize];
 
-pub fn compile(op: GPUOperation, dtype: DataType, local_size: [u32; 3]) -> Result<Blob, VKMLError> {
-    let source_bytes = op.to_slang_shader()?;
-    let source_string = std::str::from_utf8(source_bytes)
-        .map_err(|e| VKMLError::Slang(format!("Shader source is not UTF-8: {}", e)))?;
+    let blob = once_lock.get_or_try_init(|| -> Result<Blob, VKMLError> {
+        let session = SLANG_CONTEXT.session.lock().unwrap();
 
-    let dtype_str = onnx_dtype_to_slang_type(dtype);
-    let module_name = format!(
-        "{}_{}_{}x{}x{}",
-        op.as_str(),
-        dtype_str,
-        local_size[0],
-        local_size[1],
-        local_size[2]
-    );
+        let source_bytes = op.to_slang_shader()?;
+        let source_string = std::str::from_utf8(source_bytes)
+            .map_err(|e| VKMLError::Slang(format!("Shader source is not UTF-8: {}", e)))?;
 
-    // currently this is basically a string macro replacement.
-    // TODO: investigate other ways for slang to do generics
-    let mut source = String::with_capacity(source_string.len() + 256);
-    writeln!(source, "#define DTYPE {}", dtype_str).unwrap();
-    writeln!(source, "#define WORKGROUP_SIZE_X {}", local_size[0]).unwrap();
-    writeln!(source, "#define WORKGROUP_SIZE_Y {}", local_size[1]).unwrap();
-    writeln!(source, "#define WORKGROUP_SIZE_Z {}", local_size[2]).unwrap();
-    source.push_str(source_string);
+        let dtype_str = onnx_dtype_to_slang_type(dtype);
+        let module_name = format!("{}_{}", op.as_str(), dtype_str);
 
-    let virtual_path = format!("{}.slang", module_name);
+        let mut source = String::with_capacity(source_string.len() + 256);
+        writeln!(source, "#define DTYPE {}", dtype_str).unwrap();
+        source.push_str(source_string);
 
-    let ctx = get_context();
-    let session = ctx.session.lock().unwrap();
+        let virtual_path = format!("{}.slang", module_name);
 
-    let module = load_module_from_source(&session, &module_name, &virtual_path, &source)
-        .map_err(VKMLError::Slang)?;
+        let module = load_module_from_source(&session, &module_name, &virtual_path, &source)
+            .map_err(VKMLError::Slang)?;
 
-    let entry_point = module.find_entry_point_by_name("main").ok_or_else(|| {
-        VKMLError::Slang(format!(
-            "Entry point 'void main()' not found in module {}",
-            module_name
-        ))
+        let entry_point = module.find_entry_point_by_name("main").ok_or_else(|| {
+            VKMLError::Slang(format!(
+                "Entry point 'void main()' not found in module {}",
+                module_name
+            ))
+        })?;
+
+        let components = [module.downcast().clone(), entry_point.downcast().clone()];
+
+        let program = session
+            .create_composite_component_type(&components)
+            .map_err(|e| VKMLError::Slang(e.to_string()))?;
+
+        let linked = program
+            .link()
+            .map_err(|e| VKMLError::Slang(e.to_string()))?;
+
+        linked
+            .entry_point_code(0, 0)
+            .map_err(|e| VKMLError::Slang(e.to_string()))
     })?;
 
-    let components = [module.downcast().clone(), entry_point.downcast().clone()];
-
-    let program = session
-        .create_composite_component_type(&components)
-        .map_err(|e| VKMLError::Slang(e.to_string()))?;
-    let linked = program
-        .link()
-        .map_err(|e| VKMLError::Slang(e.to_string()))?;
-
-    let blob = linked
-        .entry_point_code(0, 0)
-        .map_err(|e| VKMLError::Slang(e.to_string()))?;
-
-    Ok(blob)
+    Ok(blob.clone())
 }
 
 /// Helper to perform a VTable call on a Slang object.
@@ -126,7 +116,7 @@ unsafe fn vcall_release(ptr: *mut c_void) {
     }
 }
 
-fn load_module_from_source(
+pub fn load_module_from_source(
     session: &Session,
     module_name: &str,
     path: &str,

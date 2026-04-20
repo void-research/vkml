@@ -1,4 +1,12 @@
-struct PushConstants {
+[vk::constant_id(0)]
+const int WORKGROUP_SIZE_X = 1;
+[vk::constant_id(1)]
+const int WORKGROUP_SIZE_Y = 1;
+[vk::constant_id(2)]
+const int WORKGROUP_SIZE_Z = 1;
+
+struct PushConstants
+{
     uint batch;
     uint m;
     uint k;
@@ -14,7 +22,7 @@ struct PushConstants {
 };
 
 [[vk::push_constant]]
-PushConstants dims;
+PushConstants pc;
 
 [[vk::binding(0)]]
 RWStructuredBuffer<DTYPE> a;
@@ -27,23 +35,26 @@ RWStructuredBuffer<DTYPE> c;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID) {
+void main(uint3 threadId: SV_DispatchThreadID)
+{
     uint col = threadId.x;
     uint row = threadId.y;
     uint batch = threadId.z;
 
-    if (row >= dims.m || col >= dims.n || batch >= dims.batch) {
+    if (row >= pc.m || col >= pc.n || batch >= pc.batch)
+    {
         return;
     }
 
     DTYPE sum = DTYPE(0.0);
 
-    for (uint i = 0; i < dims.k; i++) {
-        uint a_idx = batch * dims.stride_a0 + row * dims.stride_a1 + i * dims.stride_a2;
-        uint b_idx = i * dims.stride_b0 + col * dims.stride_b1;
+    for (uint i = 0; i < pc.k; i++)
+    {
+        uint a_idx = batch * pc.stride_a0 + row * pc.stride_a1 + i * pc.stride_a2;
+        uint b_idx = i * pc.stride_b0 + col * pc.stride_b1;
         sum += a[a_idx] * b[b_idx];
     }
 
-    uint c_idx = batch * dims.stride_c0 + row * dims.stride_c1 + col * dims.stride_c2;
+    uint c_idx = batch * pc.stride_c0 + row * pc.stride_c1 + col * pc.stride_c2;
     c[c_idx] = sum;
 }

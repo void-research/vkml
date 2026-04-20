@@ -1,3 +1,4 @@
+#![feature(variant_count, once_cell_try)]
 //! VKML - High-level abstractions for ML model development using Vulkan compute
 //!
 //! This library provides universal compute utilisation across different hardware vendors

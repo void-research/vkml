@@ -445,7 +445,7 @@ impl Gpu {
             return pipeline;
         }
 
-        let compiled_blob = slang_compiler::compile(op, dtype, local_size)
+        let compiled_blob = slang_compiler::compile(op, dtype)
             .unwrap_or_else(|e| panic!("Slang compilation failed for {:?}: {}", op, e));
 
         let pipeline = self

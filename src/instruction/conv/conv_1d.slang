@@ -1,4 +1,12 @@
-struct PushConstants {
+[vk::constant_id(0)]
+const int WORKGROUP_SIZE_X = 1;
+[vk::constant_id(1)]
+const int WORKGROUP_SIZE_Y = 1;
+[vk::constant_id(2)]
+const int WORKGROUP_SIZE_Z = 1;
+
+struct PushConstants
+{
     uint n;
     uint c;
     uint m;
@@ -29,12 +37,14 @@ RWStructuredBuffer<DTYPE> bias;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID) {
+void main(uint3 threadId: SV_DispatchThreadID)
+{
     uint ox = threadId.x;
     uint oc = threadId.y;
     uint batch = threadId.z;
 
-    if (ox >= pc.out_len || oc >= pc.m || batch >= pc.n) return;
+    if (ox >= pc.out_len || oc >= pc.m || batch >= pc.n)
+        return;
 
     DTYPE acc = DTYPE(0.0);
 
@@ -43,12 +53,16 @@ void main(uint3 threadId: SV_DispatchThreadID) {
     uint group_id = oc / m_per_group;
     uint c_start = group_id * c_per_group;
 
-    for (uint ic = c_start; ic < c_start + c_per_group; ++ic) {
-        for (uint k = 0u; k < pc.kernel; ++k) {
+    for (uint ic = c_start; ic < c_start + c_per_group; ++ic)
+    {
+        for (uint k = 0u; k < pc.kernel; ++k)
+        {
             int in_x_i = int(ox) * int(pc.stride) - int(pc.pad_begin) + int(k) * int(pc.dilation);
-            if (in_x_i < 0) continue;
+            if (in_x_i < 0)
+                continue;
             uint in_x = uint(in_x_i);
-            if (in_x >= pc.in_len) continue;
+            if (in_x >= pc.in_len)
+                continue;
 
             uint src_off = ((batch * pc.c + ic) * pc.in_len) + in_x;
             uint ic_in_group = ic - c_start;
@@ -58,7 +72,8 @@ void main(uint3 threadId: SV_DispatchThreadID) {
         }
     }
 
-    if (pc.has_bias != 0u) {
+    if (pc.has_bias != 0u)
+    {
         acc += bias[oc];
     }
 

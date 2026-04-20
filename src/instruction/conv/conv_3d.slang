@@ -1,4 +1,12 @@
-struct PushConstants {
+[vk::constant_id(0)]
+const int WORKGROUP_SIZE_X = 1;
+[vk::constant_id(1)]
+const int WORKGROUP_SIZE_Y = 1;
+[vk::constant_id(2)]
+const int WORKGROUP_SIZE_Z = 1;
+
+struct PushConstants
+{
     uint n;
     uint c;
     uint m;
@@ -41,7 +49,8 @@ RWStructuredBuffer<DTYPE> bias;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID) {
+void main(uint3 threadId: SV_DispatchThreadID)
+{
     uint ox = threadId.x;
     uint oy = threadId.y;
     uint local_z = threadId.z;
@@ -55,7 +64,8 @@ void main(uint3 threadId: SV_DispatchThreadID) {
     uint oc = rem % out_c_count;
     uint batch = rem / out_c_count;
 
-    if (ox >= pc.out_w || oy >= pc.out_h || od >= pc.out_d || oc >= pc.m || batch >= pc.n) return;
+    if (ox >= pc.out_w || oy >= pc.out_h || od >= pc.out_d || oc >= pc.m || batch >= pc.n)
+        return;
 
     DTYPE acc = DTYPE(0.0);
 
@@ -64,24 +74,34 @@ void main(uint3 threadId: SV_DispatchThreadID) {
     uint group_id = oc / m_per_group;
     uint c_start = group_id * c_per_group;
 
-    for (uint ic = c_start; ic < c_start + c_per_group; ++ic) {
-        for (uint kd = 0u; kd < pc.k_d; ++kd) {
+    for (uint ic = c_start; ic < c_start + c_per_group; ++ic)
+    {
+        for (uint kd = 0u; kd < pc.k_d; ++kd)
+        {
             int in_d_i = int(od) * int(pc.s_d) - int(pc.pad_d) + int(kd) * int(pc.d_d);
-            if (in_d_i < 0) continue;
+            if (in_d_i < 0)
+                continue;
             uint in_d_u = uint(in_d_i);
-            if (in_d_u >= pc.in_d) continue;
+            if (in_d_u >= pc.in_d)
+                continue;
 
-            for (uint ky = 0u; ky < pc.k_h; ++ky) {
+            for (uint ky = 0u; ky < pc.k_h; ++ky)
+            {
                 int in_y_i = int(oy) * int(pc.s_h) - int(pc.pad_h) + int(ky) * int(pc.d_h);
-                if (in_y_i < 0) continue;
+                if (in_y_i < 0)
+                    continue;
                 uint in_y = uint(in_y_i);
-                if (in_y >= pc.in_h) continue;
+                if (in_y >= pc.in_h)
+                    continue;
 
-                for (uint kx = 0u; kx < pc.k_w; ++kx) {
+                for (uint kx = 0u; kx < pc.k_w; ++kx)
+                {
                     int in_x_i = int(ox) * int(pc.s_w) - int(pc.pad_w) + int(kx) * int(pc.d_w);
-                    if (in_x_i < 0) continue;
+                    if (in_x_i < 0)
+                        continue;
                     uint in_x = uint(in_x_i);
-                    if (in_x >= pc.in_w) continue;
+                    if (in_x >= pc.in_w)
+                        continue;
 
                     uint src_off = ((((batch * pc.c + ic) * pc.in_d + in_d_u) * pc.in_h + in_y) * pc.in_w) + in_x;
                     uint ic_in_group = ic - c_start;
@@ -93,7 +113,8 @@ void main(uint3 threadId: SV_DispatchThreadID) {
         }
     }
 
-    if (pc.has_bias != 0u) {
+    if (pc.has_bias != 0u)
+    {
         acc += bias[oc];
     }
 
