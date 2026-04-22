@@ -87,8 +87,12 @@ pub fn compile(op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
         ];
         let program = session.create_composite_component_type(&components)?;
 
-        let dtype_str = onnx_dtype_to_slang_type(dtype);
-        let specialized_program = program.specialize_with_type_name(0, dtype_str)?;
+        let specialized_program = if op.is_fp_specialized() {
+            program
+        } else {
+            let dtype_str = onnx_dtype_to_slang_type(dtype);
+            program.specialize_with_type_name(0, dtype_str)?
+        };
 
         let linked = specialized_program.link()?;
 

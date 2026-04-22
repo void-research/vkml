@@ -144,10 +144,7 @@ impl Instruction for GemmInstruction {
         {
             // Tile size selection: [tile_size, threads, shmem_required_bytes, operation]
             let variants = [
-                (32, [32, 32, 1], 8192, GPUOperation::Gemm_2D2D_Tiled),
-                (16, [16, 16, 1], 2048, GPUOperation::Gemm_2D2D_Tiled),
-                (8, [8, 8, 1], 512, GPUOperation::Gemm_2D2D_Tiled),
-                (4, [4, 4, 1], 128, GPUOperation::Gemm_2D2D_Tiled),
+                (16, [16, 16, 1], 2048, GPUOperation::Gemm_2D2D_Tiled_16x16),
             ];
 
             let m_u64 = m as u64;

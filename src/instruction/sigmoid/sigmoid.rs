@@ -54,7 +54,7 @@ impl Instruction for SigmoidInstruction {
         let dst_mem = dst_tensor.get_gpu_memory_or_panic();
 
         // Prepare CPU-side values
-        let num_elements = dst_mem.size / std::mem::size_of::<f32>() as u64;
+        let num_elements = dst_tensor.desc().num_elements();
 
         // Choose operation based on data type
         let src_dtype = src_tensor.desc().data_type();
@@ -67,9 +67,18 @@ impl Instruction for SigmoidInstruction {
             )));
         }
 
-        let op_name = GPUOperation::Sigmoid;
+        let op_name = match dst_dtype {
+            DataType::Float => GPUOperation::Sigmoid_FP32,
+            DataType::Float16 => GPUOperation::Sigmoid_FP16,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "GPU Sigmoid unsupported for DataType {:?}",
+                    dst_dtype
+                )));
+            }
+        };
 
-        let local_size = gpu.optimal_workgroup_size_1d(num_elements);
+        let local_size = [256, 1, 1];
 
         gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
@@ -77,7 +86,7 @@ impl Instruction for SigmoidInstruction {
         let pc_data = (num_elements as u32).to_ne_bytes();
         gpu.bind_push_constants(command_buffer, op_name, &pc_data);
 
-        gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);
+        gpu.dispatch(command_buffer, local_size, [num_elements as u64, 1, 1]);
 
         Ok(())
     }

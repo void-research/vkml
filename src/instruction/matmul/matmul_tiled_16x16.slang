@@ -1,10 +1,3 @@
-[vk::constant_id(0)]
-const int WORKGROUP_SIZE_X = 1;
-[vk::constant_id(1)]
-const int WORKGROUP_SIZE_Y = 1;
-[vk::constant_id(2)]
-const int WORKGROUP_SIZE_Z = 1;
-
 struct PushConstants
 {
     uint m;
@@ -22,7 +15,7 @@ struct PushConstants
 PushConstants pc;
 
 [shader("compute")]
-[numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
+[numthreads(16, 16, 1)]
 void main<T : IArithmetic>(
     StructuredBuffer<T> src1,
     StructuredBuffer<T> src2,
@@ -35,12 +28,12 @@ void main<T : IArithmetic>(
     uint thread_row = threadId.y;
     uint thread_col = threadId.x;
 
-    uint out_row = tile_row * WORKGROUP_SIZE_Y + thread_row;
-    uint out_col = tile_col * WORKGROUP_SIZE_X + thread_col;
+    uint out_row = tile_row * 16 + thread_row;
+    uint out_col = tile_col * 16 + thread_col;
 
     T acc = T(0);
 
-    uint TILE_SIZE = WORKGROUP_SIZE_X; // Assume square tile
+    const uint TILE_SIZE = 16;
     uint num_k_tiles = (pc.k + TILE_SIZE - 1) / TILE_SIZE;
 
     if (num_k_tiles == 0)
@@ -52,10 +45,10 @@ void main<T : IArithmetic>(
         return;
     }
 
-    static groupshared T tileA[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
-    static groupshared T tileB[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
+    static groupshared T tileA[16 * 16];
+    static groupshared T tileB[16 * 16];
 
-    uint idx = thread_row * WORKGROUP_SIZE_X + thread_col;
+    uint idx = thread_row * 16 + thread_col;
 
     for (uint k_tile = 0; k_tile < num_k_tiles; k_tile++)
     {

@@ -104,8 +104,17 @@ impl Instruction for SoftmaxInstruction {
         }
 
         // Standard path
-        let gpu_op = GPUOperation::Softmax;
-        let local_size = gpu.optimal_workgroup_size_1d(feature_size as u64);
+        let gpu_op = match dst_dtype {
+            DataType::Float => GPUOperation::Softmax_FP32,
+            DataType::Float16 => GPUOperation::Softmax_FP16,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "GPU Softmax unsupported for DataType {:?}",
+                    dst_dtype
+                )));
+            }
+        };
+        let local_size = [256, 1, 1];
 
         gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
