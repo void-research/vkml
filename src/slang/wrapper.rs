@@ -252,13 +252,6 @@ impl EntryPoint {
 pub struct ComponentType(ComPtr);
 
 impl ComponentType {
-    pub fn specialization_param_count(&self) -> i64 {
-        unsafe {
-            let vt = self.0.vtable::<IComponentTypeVtable>();
-            (vt.getSpecializationParamCount)(self.0.as_ptr())
-        }
-    }
-
     pub fn specialize_with_type_name(
         &self,
         target_index: i64,
