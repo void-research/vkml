@@ -27,7 +27,6 @@ pub static SLANG_CONTEXT: LazyLock<SlangContext> = LazyLock::new(|| {
     let global = GlobalSession::new().expect("Failed to initialise Slang GlobalSession");
     let profile = global.find_profile("spirv_1_6");
 
-    // if maximal breaks something, can go back to high
     let options = CompilerOptions::default()
         .matrix_layout_row(true)
         .optimization(OptimizationLevel::Maximal)
@@ -82,20 +81,17 @@ pub fn compile(op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
             ))
         })?;
 
-        let entry_component = generic_entry_point.as_component_type();
-        let specialized_entry = if entry_component.specialization_param_count() > 0 {
-            let dtype_str = onnx_dtype_to_slang_type(dtype);
-            Some(entry_component.specialize_with_type_name(0, dtype_str)?)
-        } else {
-            None
-        };
-
-        let entry_component = specialized_entry.as_ref().map_or(entry_component, |c| c);
-
-        let components = [module.as_component_type(), entry_component];
-
+        let components = [
+            module.as_component_type(),
+            generic_entry_point.as_component_type(),
+        ];
         let program = session.create_composite_component_type(&components)?;
-        let linked = program.link()?;
+
+        let dtype_str = onnx_dtype_to_slang_type(dtype);
+        let specialized_program = program.specialize_with_type_name(0, dtype_str)?;
+
+        let linked = specialized_program.link()?;
+
         linked.entry_point_code(0, 0)
     })?;
 

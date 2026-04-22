@@ -223,9 +223,13 @@ impl Module {
         let name_cs = CString::new(name).unwrap();
         unsafe {
             let vt = self.0.vtable::<IModuleVtable>();
-            let mut ep: *mut slang_IEntryPoint = null_mut();
-            (vt.findEntryPointByName)(self.0.as_ptr(), name_cs.as_ptr(), &mut ep);
-            NonNull::new(ep as *mut c_void).map(|nn| EntryPoint(ComPtr(nn)))
+            let mut ptr: *mut slang_IEntryPoint = null_mut();
+            let hr = (vt.findEntryPointByName)(self.0.as_ptr(), name_cs.as_ptr(), &mut ptr);
+            if hr < 0 || ptr.is_null() {
+                None
+            } else {
+                Some(EntryPoint(ComPtr::from_owned(ptr as *mut c_void)))
+            }
         }
     }
 
@@ -241,7 +245,7 @@ pub struct EntryPoint(ComPtr);
 impl EntryPoint {
     /// EntryPoint inherits IComponentType, same COM pointer
     pub fn as_component_type(&self) -> &ComponentType {
-        unsafe { &*(self as *const EntryPoint as *const ComponentType) }
+        unsafe { std::mem::transmute(self) }
     }
 }
 
