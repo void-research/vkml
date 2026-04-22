@@ -1,12 +1,11 @@
 use crate::instruction::GPUOperation;
 use crate::slang::wrapper::{
-    Blob, CompileTarget, CompilerOptions, FloatingPointMode, GlobalSession, OptimizationLevel,
-    Session, SessionDesc, TargetDesc,
+    Blob, CompileTarget, CompilerOptions, FloatingPointMode, GlobalSession, Module,
+    OptimizationLevel, Session, SessionDesc, TargetDesc,
 };
 use crate::utils::dtype::onnx_dtype_to_slang_type;
 use crate::utils::error::VKMLError;
 use onnx_extractor::DataType;
-use std::fmt::Write;
 use std::mem::variant_count;
 use std::sync::{LazyLock, Mutex, OnceLock};
 
@@ -17,6 +16,7 @@ const NUM_OPS: usize = variant_count::<GPUOperation>();
 /// internal dictionaries and reflection caches are not thread-safe
 pub struct SlangContext {
     pub session: Mutex<Session>,
+    pub module_cache: [OnceLock<Module>; NUM_OPS],
     pub blob_cache: [[OnceLock<Blob>; NUM_DTYPES]; NUM_OPS],
 }
 
@@ -49,6 +49,7 @@ pub static SLANG_CONTEXT: LazyLock<SlangContext> = LazyLock::new(|| {
 
     SlangContext {
         session: Mutex::new(session),
+        module_cache: [const { OnceLock::new() }; NUM_OPS],
         blob_cache: [const { [const { OnceLock::new() }; NUM_DTYPES] }; NUM_OPS],
     }
 });
@@ -57,31 +58,41 @@ pub fn compile(op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
     let once_lock = &SLANG_CONTEXT.blob_cache[op as usize][dtype as usize];
 
     let blob = once_lock.get_or_try_init(|| -> Result<Blob, VKMLError> {
-        let source_bytes = op.to_slang_shader()?;
-        let source_string = std::str::from_utf8(source_bytes)
-            .map_err(|e| VKMLError::Slang(format!("Shader source is not UTF-8: {}", e)))?;
-
-        let dtype_str = onnx_dtype_to_slang_type(dtype);
-        let module_name = format!("{}_{}", op.as_str(), dtype_str);
-
-        let mut source = String::with_capacity(source_string.len() + 256);
-        writeln!(source, "#define DTYPE {}", dtype_str).unwrap();
-        source.push_str(source_string);
-
-        let virtual_path = format!("{}.slang", module_name);
-
         let session = SLANG_CONTEXT.session.lock().unwrap();
 
-        let module = session.load_module_from_source(&module_name, &virtual_path, &source)?;
+        let module = SLANG_CONTEXT.module_cache[op as usize].get_or_try_init(
+            || -> Result<Module, VKMLError> {
+                let source_bytes = op.to_slang_shader()?;
+                let source_string = std::str::from_utf8(source_bytes)
+                    .map_err(|e| VKMLError::Slang(format!("Shader source is not UTF-8: {}", e)))?;
 
-        let entry_point = module.find_entry_point_by_name("main").ok_or_else(|| {
+                let module_name = op.as_str();
+                let virtual_path = format!("{}.slang", module_name);
+
+                session.load_module_from_source(module_name, &virtual_path, source_string)
+            },
+        )?;
+
+        let module_name = op.as_str();
+
+        let generic_entry_point = module.find_entry_point_by_name("main").ok_or_else(|| {
             VKMLError::Slang(format!(
                 "Entry point 'void main()' not found in module {}",
                 module_name
             ))
         })?;
 
-        let components = [module.as_component_type(), entry_point.as_component_type()];
+        let entry_component = generic_entry_point.as_component_type();
+        let specialized_entry = if entry_component.specialization_param_count() > 0 {
+            let dtype_str = onnx_dtype_to_slang_type(dtype);
+            Some(entry_component.specialize_with_type_name(0, dtype_str)?)
+        } else {
+            None
+        };
+
+        let entry_component = specialized_entry.as_ref().map_or(entry_component, |c| c);
+
+        let components = [module.as_component_type(), entry_component];
 
         let program = session.create_composite_component_type(&components)?;
         let linked = program.link()?;

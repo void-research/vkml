@@ -1,7 +1,3 @@
-#ifndef DTYPE
-#define DTYPE float
-#endif
-
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]
@@ -25,20 +21,17 @@ struct PushConstants
     uint d_w;
     uint pad_h;
     uint pad_w;
-};
+}
 
 [[vk::push_constant]]
 PushConstants pc;
 
-[[vk::binding(0)]]
-StructuredBuffer<DTYPE> src;
-
-[[vk::binding(1)]]
-RWStructuredBuffer<DTYPE> dst;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID)
+void main<T : IArithmetic>(
+    StructuredBuffer<T> src,
+    RWStructuredBuffer<T> dst,
+    uint3 threadId: SV_DispatchThreadID)
 {
     uint out_x = threadId.x;
     uint out_y = threadId.y;
@@ -54,7 +47,7 @@ void main(uint3 threadId: SV_DispatchThreadID)
     uint batch = z / pc.c;
     uint ch = z % pc.c;
 
-    DTYPE acc = DTYPE(0.0);
+    T acc = T(0);
     bool found = false;
 
     for (uint ky = 0u; ky < pc.k_h; ++ky)
@@ -71,7 +64,7 @@ void main(uint3 threadId: SV_DispatchThreadID)
                 continue;
 
             uint src_off = (((batch * pc.c + ch) * pc.in_h + in_y) * pc.in_w) + in_x;
-            DTYPE val = src[src_off];
+            T val = src[src_off];
             if (!found)
             {
                 acc = val;
@@ -88,5 +81,5 @@ void main(uint3 threadId: SV_DispatchThreadID)
     if (found)
         dst[dst_off] = acc;
     else
-        dst[dst_off] = DTYPE(0.0);
+        dst[dst_off] = T(0);
 }

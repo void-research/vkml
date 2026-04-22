@@ -4,6 +4,7 @@ use shader_slang_sys::{
     ISlangBlob, ISlangUnknown, ISlangUnknown__bindgen_vtable, SlangInt, SlangResult,
     slang_CompilerOptionEntry, slang_CompilerOptionName, slang_CompilerOptionValue,
     slang_CompilerOptionValueKind, slang_IComponentType, slang_IEntryPoint, slang_SessionDesc,
+    slang_SpecializationArg, slang_SpecializationArg__bindgen_ty_1, slang_SpecializationArg_Kind,
     slang_TargetDesc,
 };
 use std::ffi::{CString, c_void};
@@ -247,6 +248,74 @@ impl EntryPoint {
 pub struct ComponentType(ComPtr);
 
 impl ComponentType {
+    pub fn specialization_param_count(&self) -> i64 {
+        unsafe {
+            let vt = self.0.vtable::<IComponentTypeVtable>();
+            (vt.getSpecializationParamCount)(self.0.as_ptr())
+        }
+    }
+
+    pub fn specialize_with_type_name(
+        &self,
+        target_index: i64,
+        type_name: &str,
+    ) -> Result<ComponentType, VKMLError> {
+        let type_name_cs = CString::new(type_name).map_err(|_| {
+            VKMLError::Slang(format!(
+                "Specialization type name contains interior NUL: {}",
+                type_name
+            ))
+        })?;
+
+        unsafe {
+            let vt = self.0.vtable::<IComponentTypeVtable>();
+
+            let mut layout_diag = null_mut();
+            let layout = (vt.getLayout)(self.0.as_ptr(), target_index, &mut layout_diag);
+            if layout.is_null() {
+                let msg = extract_diagnostics(layout_diag).unwrap_or_else(|| {
+                    format!(
+                        "Failed to get Slang layout when specializing for type '{}'",
+                        type_name
+                    )
+                });
+                return Err(VKMLError::Slang(msg));
+            }
+            if !layout_diag.is_null() {
+                let unknown_vt = &**(layout_diag as *mut *mut ISlangUnknown__bindgen_vtable);
+                (unknown_vt.ISlangUnknown_release)(layout_diag as *mut _);
+            }
+
+            let type_reflection = shader_slang_sys::spReflection_FindTypeByName(
+                layout as *mut shader_slang_sys::SlangReflection,
+                type_name_cs.as_ptr(),
+            );
+
+            if type_reflection.is_null() {
+                return Err(VKMLError::Slang(format!(
+                    "Type '{}' not found in Slang reflection layout",
+                    type_name
+                )));
+            }
+
+            let arg = slang_SpecializationArg {
+                kind: slang_SpecializationArg_Kind::Type,
+                __bindgen_anon_1: slang_SpecializationArg__bindgen_ty_1 {
+                    type_: type_reflection as *mut shader_slang_sys::slang_TypeReflection,
+                },
+            };
+
+            let mut specialized = null_mut();
+            let mut diag = null_mut();
+            let hr = (vt.specialize)(self.0.as_ptr(), &arg, 1, &mut specialized, &mut diag);
+            check(hr, diag)?;
+
+            Ok(ComponentType(ComPtr::from_owned(
+                specialized as *mut c_void,
+            )))
+        }
+    }
+
     pub fn link(&self) -> Result<ComponentType, VKMLError> {
         unsafe {
             let vt = self.0.vtable::<IComponentTypeVtable>();

@@ -1,7 +1,3 @@
-#ifndef DTYPE
-#define DTYPE float
-#endif
-
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]
@@ -22,16 +18,13 @@ struct PushConstants
 [[vk::push_constant]]
 PushConstants pc;
 
-[[vk::binding(0)]]
-StructuredBuffer<DTYPE> src1;
-[[vk::binding(1)]]
-StructuredBuffer<DTYPE> src2;
-[[vk::binding(2)]]
-RWStructuredBuffer<DTYPE> dst;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID)
+void main<T : IArithmetic>(
+    StructuredBuffer<T> src1,
+    StructuredBuffer<T> src2,
+    RWStructuredBuffer<T> dst,
+    uint3 threadId: SV_DispatchThreadID)
 {
     uint gid = threadId.x;
     uint total = pc.total;
@@ -45,9 +38,9 @@ void main(uint3 threadId: SV_DispatchThreadID)
     {
         uint d = pc.dims[i];
         uint r = idx % d;
-        idx /= d;
-        offA += r * pc.strides_a[i];
-        offB += r * pc.strides_b[i];
+        idx = idx / d;
+        offA = offA + r * pc.strides_a[i];
+        offB = offB + r * pc.strides_b[i];
     }
 
     dst[gid] = max(src1[offA], src2[offB]);

@@ -1,7 +1,3 @@
-#ifndef DTYPE
-#define DTYPE float
-#endif
-
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]
@@ -20,23 +16,18 @@ struct PushConstants
     uint stride_b2;
     uint stride_c0;
     uint stride_c1;
-};
+}
 
 [[vk::push_constant]]
 PushConstants pc;
 
-[[vk::binding(0)]]
-StructuredBuffer<DTYPE> src1;
-
-[[vk::binding(1)]]
-StructuredBuffer<DTYPE> src2;
-
-[[vk::binding(2)]]
-RWStructuredBuffer<DTYPE> dst;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID)
+void main<T : IArithmetic>(
+    StructuredBuffer<T> src1,
+    StructuredBuffer<T> src2,
+    RWStructuredBuffer<T> dst,
+    uint3 threadId: SV_DispatchThreadID)
 {
     uint col = threadId.x;
     uint batch = threadId.y;
@@ -46,13 +37,13 @@ void main(uint3 threadId: SV_DispatchThreadID)
         return;
     }
 
-    DTYPE sum = DTYPE(0.0);
+    T sum = T(0);
 
     for (uint i = 0; i < pc.k; i++)
     {
         uint a_idx = i * pc.stride_a;
         uint b_idx = batch * pc.stride_b0 + i * pc.stride_b1 + col * pc.stride_b2;
-        sum += src1[a_idx] * src2[b_idx];
+        sum = sum + src1[a_idx] * src2[b_idx];
     }
 
     uint c_idx = batch * pc.stride_c0 + col * pc.stride_c1;

@@ -1,7 +1,3 @@
-#ifndef DTYPE
-#define DTYPE float
-#endif
-
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]
@@ -25,26 +21,19 @@ struct PushConstants
     float alpha;
     float beta;
     uint has_c;
-};
+}
 
 [[vk::push_constant]]
 PushConstants pc;
 
-[[vk::binding(0)]]
-StructuredBuffer<DTYPE> a;
-
-[[vk::binding(1)]]
-StructuredBuffer<DTYPE> b;
-
-[[vk::binding(2)]]
-StructuredBuffer<DTYPE> c;
-
-[[vk::binding(3)]]
-RWStructuredBuffer<DTYPE> y;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
+void main<T : IArithmetic>(
+    StructuredBuffer<T> a,
+    StructuredBuffer<T> b,
+    StructuredBuffer<T> c,
+    RWStructuredBuffer<T> y,
+    uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
 {
     uint tile_row = groupId.y;
     uint tile_col = groupId.x;
@@ -55,7 +44,7 @@ void main(uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
     uint out_row = tile_row * WORKGROUP_SIZE_Y + thread_row;
     uint out_col = tile_col * WORKGROUP_SIZE_X + thread_col;
 
-    DTYPE acc = DTYPE(0.0);
+    T acc = T(0);
 
     uint TILE_SIZE = WORKGROUP_SIZE_X; // Assume square tile
 
@@ -70,11 +59,11 @@ void main(uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
     {
         if (out_row < pc.m && out_col < pc.n)
         {
-            DTYPE result = DTYPE(pc.alpha) * DTYPE(0.0);
+            T result = T(pc.alpha) * T(0);
             if (pc.has_c != 0)
             {
                 uint c_idx = out_row * pc.n + out_col;
-                result += DTYPE(pc.beta) * c[c_idx];
+                result = result + T(pc.beta) * c[c_idx];
             }
             uint y_idx = out_row * pc.stride_y0 + out_col * pc.stride_y1;
             y[y_idx] = result;
@@ -82,8 +71,8 @@ void main(uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
         return;
     }
 
-    static groupshared DTYPE tileA[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
-    static groupshared DTYPE tileB[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
+    static groupshared T tileA[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
+    static groupshared T tileB[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
 
     uint idx = thread_row * TILE_SIZE + thread_col;
 
@@ -95,16 +84,16 @@ void main(uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
 
         tileA[idx] = (out_row < pc.m && col_a < pc.k)
                          ? a[out_row * stride_a_m + col_a * stride_a_k]
-                         : DTYPE(0.0);
+                         : T(0);
         tileB[idx] = (row_b < pc.k && out_col < pc.n)
                          ? b[row_b * stride_b_k + out_col * stride_b_n]
-                         : DTYPE(0.0);
+                         : T(0);
 
         GroupMemoryBarrierWithGroupSync();
 
         for (uint ki = 0; ki < TILE_SIZE; ki++)
         {
-            acc += tileA[thread_row * TILE_SIZE + ki] * tileB[ki * TILE_SIZE + thread_col];
+            acc = acc + tileA[thread_row * TILE_SIZE + ki] * tileB[ki * TILE_SIZE + thread_col];
         }
 
         GroupMemoryBarrierWithGroupSync();
@@ -112,11 +101,11 @@ void main(uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
 
     if (out_row < pc.m && out_col < pc.n)
     {
-        DTYPE result = DTYPE(pc.alpha) * acc;
+        T result = T(pc.alpha) * acc;
         if (pc.has_c != 0)
         {
             uint c_idx = out_row * pc.n + out_col;
-            result += DTYPE(pc.beta) * c[c_idx];
+            result = result + T(pc.beta) * c[c_idx];
         }
         uint y_idx = out_row * pc.stride_y0 + out_col * pc.stride_y1;
         y[y_idx] = result;

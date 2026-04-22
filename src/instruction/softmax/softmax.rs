@@ -103,28 +103,6 @@ impl Instruction for SoftmaxInstruction {
             )));
         }
 
-        // Subgroup-optimized variant
-        if gpu
-            .subgroup_supported_operations()
-            .contains(vk::SubgroupFeatureFlags::ARITHMETIC)
-            && gpu.subgroup_size() >= 16
-        {
-            let gpu_op = GPUOperation::Softmax_SGA;
-            let local_size = gpu.optimal_workgroup_size_1d(feature_size as u64);
-
-            gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
-            gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-            gpu.bind_push_constants(command_buffer, gpu_op, pc_bytes);
-
-            gpu.dispatch(
-                command_buffer,
-                local_size,
-                [batch_size as u64 * local_size[0] as u64, 1, 1],
-            );
-
-            return Ok(());
-        }
-
         // Standard path
         let gpu_op = GPUOperation::Softmax;
         let local_size = gpu.optimal_workgroup_size_1d(feature_size as u64);

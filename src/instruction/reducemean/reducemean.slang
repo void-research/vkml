@@ -1,7 +1,3 @@
-#ifndef DTYPE
-#define DTYPE float
-#endif
-
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]
@@ -13,20 +9,17 @@ struct PushConstants
 {
     uint total;
     uint reduction_size;
-};
+}
 
 [[vk::push_constant]]
 PushConstants pc;
 
-[[vk::binding(0)]]
-StructuredBuffer<DTYPE> src;
-
-[[vk::binding(1)]]
-RWStructuredBuffer<DTYPE> dst;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID)
+void main<T : IArithmetic>(
+    StructuredBuffer<T> src,
+    RWStructuredBuffer<T> dst,
+    uint3 threadId: SV_DispatchThreadID)
 {
     uint gid = threadId.x;
     uint total = pc.total;
@@ -34,11 +27,11 @@ void main(uint3 threadId: SV_DispatchThreadID)
         return;
 
     uint base = gid * pc.reduction_size;
-    DTYPE sum = DTYPE(0.0);
+    T sum = T(0);
     for (uint i = 0u; i < pc.reduction_size; ++i)
     {
-        sum += src[base + i];
+        sum = sum + src[base + i];
     }
 
-    dst[gid] = sum / DTYPE(pc.reduction_size);
+    dst[gid] = sum / T(pc.reduction_size);
 }

@@ -1,7 +1,3 @@
-#ifndef DTYPE
-#define DTYPE float
-#endif
-
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]
@@ -17,19 +13,17 @@ struct PushConstants
 [[vk::push_constant]]
 PushConstants pc;
 
-[[vk::binding(0)]]
-StructuredBuffer<DTYPE> src;
-[[vk::binding(1)]]
-RWStructuredBuffer<DTYPE> dst;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID)
+void main<T : IArithmetic>(
+    StructuredBuffer<T> src,
+    RWStructuredBuffer<T> dst,
+    uint3 threadId: SV_DispatchThreadID)
 {
     uint idx = threadId.x;
     if (idx >= pc.total)
         return;
 
-    DTYPE val = src[idx];
-    dst[idx] = max((DTYPE)0, val);
+    T val = src[idx];
+    dst[idx] = max(T(0), val);
 }

@@ -1,7 +1,3 @@
-#ifndef DTYPE
-#define DTYPE float
-#endif
-
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]
@@ -22,26 +18,19 @@ struct PushConstants
     uint pad_begin;
     uint group;
     uint has_bias;
-};
+}
 
 [[vk::push_constant]]
 PushConstants pc;
 
-[[vk::binding(0)]]
-StructuredBuffer<DTYPE> src;
-
-[[vk::binding(1)]]
-StructuredBuffer<DTYPE> weights;
-
-[[vk::binding(2)]]
-RWStructuredBuffer<DTYPE> dst;
-
-[[vk::binding(3)]]
-StructuredBuffer<DTYPE> bias;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID)
+void main<T : IArithmetic>(
+    StructuredBuffer<T> src,
+    StructuredBuffer<T> weights,
+    RWStructuredBuffer<T> dst,
+    StructuredBuffer<T> bias,
+    uint3 threadId: SV_DispatchThreadID)
 {
     uint ox = threadId.x;
     uint oc = threadId.y;
@@ -50,7 +39,7 @@ void main(uint3 threadId: SV_DispatchThreadID)
     if (ox >= pc.out_len || oc >= pc.m || batch >= pc.n)
         return;
 
-    DTYPE acc = DTYPE(0.0);
+    T acc = T(0);
 
     uint m_per_group = pc.m / pc.group;
     uint c_per_group = pc.c / pc.group;
@@ -72,13 +61,13 @@ void main(uint3 threadId: SV_DispatchThreadID)
             uint ic_in_group = ic - c_start;
             uint w_off = ((oc * c_per_group + ic_in_group) * pc.kernel) + k;
 
-            acc += src[src_off] * weights[w_off];
+            acc = acc + src[src_off] * weights[w_off];
         }
     }
 
     if (pc.has_bias != 0u)
     {
-        acc += bias[oc];
+        acc = acc + bias[oc];
     }
 
     uint dst_off = ((batch * pc.m + oc) * pc.out_len) + ox;

@@ -1,7 +1,3 @@
-#ifndef DTYPE
-#define DTYPE float
-#endif
-
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]
@@ -25,26 +21,19 @@ struct PushConstants
     float alpha;
     float beta;
     uint has_c;
-};
+}
 
 [[vk::push_constant]]
 PushConstants pc;
 
-[[vk::binding(0)]]
-StructuredBuffer<DTYPE> a;
-
-[[vk::binding(1)]]
-StructuredBuffer<DTYPE> b;
-
-[[vk::binding(2)]]
-StructuredBuffer<DTYPE> c;
-
-[[vk::binding(3)]]
-RWStructuredBuffer<DTYPE> y;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID)
+void main<T : IArithmetic>(
+    StructuredBuffer<T> a,
+    StructuredBuffer<T> b,
+    StructuredBuffer<T> c,
+    RWStructuredBuffer<T> y,
+    uint3 threadId: SV_DispatchThreadID)
 {
     uint row = threadId.y;
     uint col = threadId.x;
@@ -54,7 +43,7 @@ void main(uint3 threadId: SV_DispatchThreadID)
         return;
     }
 
-    DTYPE sum = DTYPE(0.0);
+    T sum = T(0);
 
     uint stride_a_k = (pc.trans_a != 0) ? pc.stride_a0 : pc.stride_a1;
     uint stride_a_m = (pc.trans_a != 0) ? pc.stride_a1 : pc.stride_a0;
@@ -65,15 +54,15 @@ void main(uint3 threadId: SV_DispatchThreadID)
     {
         uint a_idx = row * stride_a_m + i * stride_a_k;
         uint b_idx = i * stride_b_k + col * stride_b_n;
-        sum += a[a_idx] * b[b_idx];
+        sum = sum + a[a_idx] * b[b_idx];
     }
 
-    DTYPE result = DTYPE(pc.alpha) * sum;
+    T result = T(pc.alpha) * sum;
 
     if (pc.has_c != 0)
     {
         uint c_idx = row * pc.n + col;
-        result += DTYPE(pc.beta) * c[c_idx];
+        result = result + T(pc.beta) * c[c_idx];
     }
 
     uint y_idx = row * pc.stride_y0 + col * pc.stride_y1;

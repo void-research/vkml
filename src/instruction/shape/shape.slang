@@ -1,7 +1,3 @@
-#ifndef DTYPE
-#define DTYPE float
-#endif
-
 [vk::constant_id(0)]
 const int WORKGROUP_SIZE_X = 1;
 [vk::constant_id(1)]
@@ -16,18 +12,17 @@ struct PushConstants
     uint pad;
     uint dims_lo[8];
     uint dims_hi[8];
-};
+}
 
 [[vk::push_constant]]
 PushConstants pc;
 
-// We write pairs of uints (low, high) to form 64-bit bounds
-[[vk::binding(0)]]
-RWStructuredBuffer<uint> dst;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(uint3 threadId: SV_DispatchThreadID)
+void main(
+    // We write pairs of uints (low, high) to form 64-bit bounds
+    RWStructuredBuffer<uint> dst,
+    uint3 threadId: SV_DispatchThreadID)
 {
     uint idx = threadId.x;
     if (idx >= pc.slice_len)
