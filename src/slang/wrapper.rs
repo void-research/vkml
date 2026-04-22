@@ -237,6 +237,7 @@ impl Module {
     }
 }
 
+#[derive(Clone)]
 pub struct ComponentType(ComPtr);
 
 impl ComponentType {
