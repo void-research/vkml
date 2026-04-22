@@ -6,24 +6,18 @@ use crate::slang::wrapper::{
 use crate::utils::dtype::onnx_dtype_to_slang_type;
 use crate::utils::error::VKMLError;
 use onnx_extractor::DataType;
-use std::mem::variant_count;
-use std::sync::{LazyLock, Mutex, OnceLock};
-
-const NUM_DTYPES: usize = variant_count::<DataType>();
-const NUM_OPS: usize = variant_count::<GPUOperation>();
+use std::collections::HashMap;
+use std::sync::{LazyLock, RwLock};
 
 /// the session must be protected by a mutex because slangs ISession
 /// internal dictionaries and reflection caches are not thread-safe
 pub struct SlangContext {
-    pub session: Mutex<Session>,
-    pub module_cache: [OnceLock<Module>; NUM_OPS],
-    pub blob_cache: [[OnceLock<Blob>; NUM_DTYPES]; NUM_OPS],
+    pub session: Session,
+    pub module_cache: HashMap<GPUOperation, Module>,
+    pub blob_cache: HashMap<(GPUOperation, DataType), Blob>,
 }
 
-unsafe impl Send for SlangContext {}
-unsafe impl Sync for SlangContext {}
-
-pub static SLANG_CONTEXT: LazyLock<SlangContext> = LazyLock::new(|| {
+pub static SLANG_CONTEXT: LazyLock<RwLock<SlangContext>> = LazyLock::new(|| {
     let global = GlobalSession::new().expect("Failed to initialise Slang GlobalSession");
     let profile = global.find_profile("spirv_1_6");
 
@@ -46,58 +40,74 @@ pub static SLANG_CONTEXT: LazyLock<SlangContext> = LazyLock::new(|| {
         .create_session(&session_desc)
         .expect("Failed to create persistent Slang Session");
 
-    SlangContext {
-        session: Mutex::new(session),
-        module_cache: [const { OnceLock::new() }; NUM_OPS],
-        blob_cache: [const { [const { OnceLock::new() }; NUM_DTYPES] }; NUM_OPS],
-    }
+    RwLock::new(SlangContext {
+        session,
+        module_cache: HashMap::new(),
+        blob_cache: HashMap::new(),
+    })
 });
 
 pub fn compile(op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
-    let once_lock = &SLANG_CONTEXT.blob_cache[op as usize][dtype as usize];
+    let key = (op, dtype);
 
-    let blob = once_lock.get_or_try_init(|| -> Result<Blob, VKMLError> {
-        let session = SLANG_CONTEXT.session.lock().unwrap();
+    // 1. Check if already compiled (Read Lock)
+    {
+        let ctx = SLANG_CONTEXT.read().unwrap();
+        if let Some(blob) = ctx.blob_cache.get(&key) {
+            return Ok(blob.clone());
+        }
+    }
 
-        let module = SLANG_CONTEXT.module_cache[op as usize].get_or_try_init(
-            || -> Result<Module, VKMLError> {
-                let source_bytes = op.to_slang_shader()?;
-                let source_string = std::str::from_utf8(source_bytes)
-                    .map_err(|e| VKMLError::Slang(format!("Shader source is not UTF-8: {}", e)))?;
+    // 2. Not found, need to compile (Write Lock + Double-checked)
+    let mut ctx = SLANG_CONTEXT.write().unwrap();
+    if let Some(blob) = ctx.blob_cache.get(&key) {
+        return Ok(blob.clone());
+    }
 
-                let module_name = op.as_str();
-                let virtual_path = format!("{}.slang", module_name);
-
-                session.load_module_from_source(module_name, &virtual_path, source_string)
-            },
-        )?;
+    // 3. Get or compile module
+    let module = if let Some(m) = ctx.module_cache.get(&op) {
+        m.clone()
+    } else {
+        let source_bytes = op.to_slang_shader()?;
+        let source_string = std::str::from_utf8(source_bytes)
+            .map_err(|e| VKMLError::Slang(format!("Shader source is not UTF-8: {}", e)))?;
 
         let module_name = op.as_str();
+        let virtual_path = format!("{}.slang", module_name);
 
-        let generic_entry_point = module.find_entry_point_by_name("main").ok_or_else(|| {
-            VKMLError::Slang(format!(
-                "Entry point 'void main()' not found in module {}",
-                module_name
-            ))
-        })?;
+        let m = ctx
+            .session
+            .load_module_from_source(module_name, &virtual_path, source_string)?;
+        ctx.module_cache.insert(op, m.clone());
+        m
+    };
 
-        let components = [
-            module.as_component_type(),
-            generic_entry_point.as_component_type(),
-        ];
-        let program = session.create_composite_component_type(&components)?;
-
-        let specialized_program = if op.is_fp_specialized() {
-            program
-        } else {
-            let dtype_str = onnx_dtype_to_slang_type(dtype);
-            program.specialize_with_type_name(0, dtype_str)?
-        };
-
-        let linked = specialized_program.link()?;
-
-        linked.entry_point_code(0, 0)
+    // 4. Specialize and link
+    let module_name = op.as_str();
+    let generic_entry_point = module.find_entry_point_by_name("main").ok_or_else(|| {
+        VKMLError::Slang(format!(
+            "Entry point 'void main()' not found in module {}",
+            module_name
+        ))
     })?;
 
-    Ok(blob.clone())
+    let components = [
+        module.as_component_type(),
+        generic_entry_point.as_component_type(),
+    ];
+
+    let program = ctx.session.create_composite_component_type(&components)?;
+
+    let specialized_program = if op.is_fp_specialized() {
+        program
+    } else {
+        let dtype_str = onnx_dtype_to_slang_type(dtype);
+        program.specialize_with_type_name(0, dtype_str)?
+    };
+
+    let linked = specialized_program.link()?;
+    let blob = linked.entry_point_code(0, 0)?;
+
+    ctx.blob_cache.insert(key, blob.clone());
+    Ok(blob)
 }

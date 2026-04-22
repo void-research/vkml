@@ -153,13 +153,23 @@ impl GPUOperation {
             GPUOperation::MatMul_3D3D => Ok(include_bytes!("matmul/matmul_3d3d.slang")),
             GPUOperation::MatMul_3D1D => Ok(include_bytes!("matmul/matmul_3d1d.slang")),
             GPUOperation::MatMul_1D3D => Ok(include_bytes!("matmul/matmul_1d3d.slang")),
-            GPUOperation::MatMul_2D2D_Tiled_8x8 => Ok(include_bytes!("matmul/matmul_tiled_8x8.slang")),
-            GPUOperation::MatMul_2D2D_Tiled_16x16 => Ok(include_bytes!("matmul/matmul_tiled_16x16.slang")),
-            GPUOperation::MatMul_2D2D_Tiled_32x32 => Ok(include_bytes!("matmul/matmul_tiled_32x32.slang")),
+            GPUOperation::MatMul_2D2D_Tiled_8x8 => {
+                Ok(include_bytes!("matmul/matmul_tiled_8x8.slang"))
+            }
+            GPUOperation::MatMul_2D2D_Tiled_16x16 => {
+                Ok(include_bytes!("matmul/matmul_tiled_16x16.slang"))
+            }
+            GPUOperation::MatMul_2D2D_Tiled_32x32 => {
+                Ok(include_bytes!("matmul/matmul_tiled_32x32.slang"))
+            }
             GPUOperation::Gemm => Ok(include_bytes!("gemm/gemm.slang")),
             GPUOperation::Gemm_2D2D_Tiled_8x8 => Ok(include_bytes!("gemm/gemm_tiled_8x8.slang")),
-            GPUOperation::Gemm_2D2D_Tiled_16x16 => Ok(include_bytes!("gemm/gemm_tiled_16x16.slang")),
-            GPUOperation::Gemm_2D2D_Tiled_32x32 => Ok(include_bytes!("gemm/gemm_tiled_32x32.slang")),
+            GPUOperation::Gemm_2D2D_Tiled_16x16 => {
+                Ok(include_bytes!("gemm/gemm_tiled_16x16.slang"))
+            }
+            GPUOperation::Gemm_2D2D_Tiled_32x32 => {
+                Ok(include_bytes!("gemm/gemm_tiled_32x32.slang"))
+            }
         }
     }
 

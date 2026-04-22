@@ -216,6 +216,7 @@ impl Session {
     }
 }
 
+#[derive(Clone)]
 pub struct Module(ComPtr);
 
 impl Module {
