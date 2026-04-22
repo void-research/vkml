@@ -64,9 +64,7 @@ pub fn compile(op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
 
     // 3. Load module and find entry point
     let module_name = op.as_str();
-    let source_bytes = op.to_slang_shader()?;
-    let source_string = std::str::from_utf8(source_bytes)
-        .map_err(|e| VKMLError::Slang(format!("Shader source is not UTF-8: {e}")))?;
+    let source_string = op.to_slang_shader()?;
 
     let virtual_path = format!("{module_name}.slang");
     let module = ctx

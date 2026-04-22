@@ -122,54 +122,50 @@ impl GPUOperation {
         }
     }
 
-    pub fn to_slang_shader(self) -> Result<&'static [u8], VKMLError> {
+    pub fn to_slang_shader(self) -> Result<&'static str, VKMLError> {
         match self {
-            GPUOperation::Addition => Ok(include_bytes!("add/add.slang")),
-            GPUOperation::Addition_NoStride => Ok(include_bytes!("add/add_nostride.slang")),
-            GPUOperation::Subtract => Ok(include_bytes!("sub/sub.slang")),
-            GPUOperation::Multiply => Ok(include_bytes!("mul/mul.slang")),
-            GPUOperation::Divide => Ok(include_bytes!("div/div.slang")),
-            GPUOperation::Maximum => Ok(include_bytes!("max/max.slang")),
-            GPUOperation::Minimum => Ok(include_bytes!("min/min.slang")),
-            GPUOperation::ReLU => Ok(include_bytes!("relu/relu.slang")),
-            GPUOperation::Sigmoid_FP32 => Ok(include_bytes!("sigmoid/sigmoid_fp32.slang")),
-            GPUOperation::Sigmoid_FP16 => Ok(include_bytes!("sigmoid/sigmoid_fp16.slang")),
-            GPUOperation::Expand => Ok(include_bytes!("expand/expand.slang")),
-            GPUOperation::ReduceMean => Ok(include_bytes!("reducemean/reducemean.slang")),
-            GPUOperation::Shape_Write => Ok(include_bytes!("shape/shape.slang")),
-            GPUOperation::MaxPool_1D => Ok(include_bytes!("maxpool/maxpool_1d.slang")),
-            GPUOperation::MaxPool_2D => Ok(include_bytes!("maxpool/maxpool_2d.slang")),
-            GPUOperation::MaxPool_3D => Ok(include_bytes!("maxpool/maxpool_3d.slang")),
-            GPUOperation::Softmax_FP32 => Ok(include_bytes!("softmax/softmax_fp32.slang")),
-            GPUOperation::Softmax_FP16 => Ok(include_bytes!("softmax/softmax_fp16.slang")),
-            GPUOperation::Conv_1D => Ok(include_bytes!("conv/conv_1d.slang")),
-            GPUOperation::Conv_2D => Ok(include_bytes!("conv/conv_2d.slang")),
-            GPUOperation::Conv_3D => Ok(include_bytes!("conv/conv_3d.slang")),
-            GPUOperation::MatMul_1D2D => Ok(include_bytes!("matmul/matmul_1d2d.slang")),
-            GPUOperation::MatMul_2D1D => Ok(include_bytes!("matmul/matmul_2d1d.slang")),
-            GPUOperation::MatMul_2D2D => Ok(include_bytes!("matmul/matmul_2d2d.slang")),
-            GPUOperation::MatMul_2D3D => Ok(include_bytes!("matmul/matmul_2d3d.slang")),
-            GPUOperation::MatMul_3D2D => Ok(include_bytes!("matmul/matmul_3d2d.slang")),
-            GPUOperation::MatMul_3D3D => Ok(include_bytes!("matmul/matmul_3d3d.slang")),
-            GPUOperation::MatMul_3D1D => Ok(include_bytes!("matmul/matmul_3d1d.slang")),
-            GPUOperation::MatMul_1D3D => Ok(include_bytes!("matmul/matmul_1d3d.slang")),
+            GPUOperation::Addition => Ok(include_str!("add/add.slang")),
+            GPUOperation::Addition_NoStride => Ok(include_str!("add/add_nostride.slang")),
+            GPUOperation::Subtract => Ok(include_str!("sub/sub.slang")),
+            GPUOperation::Multiply => Ok(include_str!("mul/mul.slang")),
+            GPUOperation::Divide => Ok(include_str!("div/div.slang")),
+            GPUOperation::Maximum => Ok(include_str!("max/max.slang")),
+            GPUOperation::Minimum => Ok(include_str!("min/min.slang")),
+            GPUOperation::ReLU => Ok(include_str!("relu/relu.slang")),
+            GPUOperation::Sigmoid_FP32 => Ok(include_str!("sigmoid/sigmoid_fp32.slang")),
+            GPUOperation::Sigmoid_FP16 => Ok(include_str!("sigmoid/sigmoid_fp16.slang")),
+            GPUOperation::Expand => Ok(include_str!("expand/expand.slang")),
+            GPUOperation::ReduceMean => Ok(include_str!("reducemean/reducemean.slang")),
+            GPUOperation::Shape_Write => Ok(include_str!("shape/shape.slang")),
+            GPUOperation::MaxPool_1D => Ok(include_str!("maxpool/maxpool_1d.slang")),
+            GPUOperation::MaxPool_2D => Ok(include_str!("maxpool/maxpool_2d.slang")),
+            GPUOperation::MaxPool_3D => Ok(include_str!("maxpool/maxpool_3d.slang")),
+            GPUOperation::Softmax_FP32 => Ok(include_str!("softmax/softmax_fp32.slang")),
+            GPUOperation::Softmax_FP16 => Ok(include_str!("softmax/softmax_fp16.slang")),
+            GPUOperation::Conv_1D => Ok(include_str!("conv/conv_1d.slang")),
+            GPUOperation::Conv_2D => Ok(include_str!("conv/conv_2d.slang")),
+            GPUOperation::Conv_3D => Ok(include_str!("conv/conv_3d.slang")),
+            GPUOperation::MatMul_1D2D => Ok(include_str!("matmul/matmul_1d2d.slang")),
+            GPUOperation::MatMul_2D1D => Ok(include_str!("matmul/matmul_2d1d.slang")),
+            GPUOperation::MatMul_2D2D => Ok(include_str!("matmul/matmul_2d2d.slang")),
+            GPUOperation::MatMul_2D3D => Ok(include_str!("matmul/matmul_2d3d.slang")),
+            GPUOperation::MatMul_3D2D => Ok(include_str!("matmul/matmul_3d2d.slang")),
+            GPUOperation::MatMul_3D3D => Ok(include_str!("matmul/matmul_3d3d.slang")),
+            GPUOperation::MatMul_3D1D => Ok(include_str!("matmul/matmul_3d1d.slang")),
+            GPUOperation::MatMul_1D3D => Ok(include_str!("matmul/matmul_1d3d.slang")),
             GPUOperation::MatMul_2D2D_Tiled_8x8 => {
-                Ok(include_bytes!("matmul/matmul_tiled_8x8.slang"))
+                Ok(include_str!("matmul/matmul_tiled_8x8.slang"))
             }
             GPUOperation::MatMul_2D2D_Tiled_16x16 => {
-                Ok(include_bytes!("matmul/matmul_tiled_16x16.slang"))
+                Ok(include_str!("matmul/matmul_tiled_16x16.slang"))
             }
             GPUOperation::MatMul_2D2D_Tiled_32x32 => {
-                Ok(include_bytes!("matmul/matmul_tiled_32x32.slang"))
+                Ok(include_str!("matmul/matmul_tiled_32x32.slang"))
             }
-            GPUOperation::Gemm => Ok(include_bytes!("gemm/gemm.slang")),
-            GPUOperation::Gemm_2D2D_Tiled_8x8 => Ok(include_bytes!("gemm/gemm_tiled_8x8.slang")),
-            GPUOperation::Gemm_2D2D_Tiled_16x16 => {
-                Ok(include_bytes!("gemm/gemm_tiled_16x16.slang"))
-            }
-            GPUOperation::Gemm_2D2D_Tiled_32x32 => {
-                Ok(include_bytes!("gemm/gemm_tiled_32x32.slang"))
-            }
+            GPUOperation::Gemm => Ok(include_str!("gemm/gemm.slang")),
+            GPUOperation::Gemm_2D2D_Tiled_8x8 => Ok(include_str!("gemm/gemm_tiled_8x8.slang")),
+            GPUOperation::Gemm_2D2D_Tiled_16x16 => Ok(include_str!("gemm/gemm_tiled_16x16.slang")),
+            GPUOperation::Gemm_2D2D_Tiled_32x32 => Ok(include_str!("gemm/gemm_tiled_32x32.slang")),
         }
     }
 
