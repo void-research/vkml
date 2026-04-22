@@ -91,10 +91,7 @@ pub fn compile(op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
         ))
     })?;
 
-    let components = [
-        module.as_component_type(),
-        generic_entry_point.as_component_type(),
-    ];
+    let components = [module.as_component_type(), &generic_entry_point];
 
     let program = ctx.session.create_composite_component_type(&components)?;
 

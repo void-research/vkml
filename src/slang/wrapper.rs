@@ -217,7 +217,7 @@ impl Session {
 pub struct Module(ComPtr);
 
 impl Module {
-    pub fn find_entry_point_by_name(&self, name: &str) -> Option<EntryPoint> {
+    pub fn find_entry_point_by_name(&self, name: &str) -> Option<ComponentType> {
         let name_cs = CString::new(name).unwrap();
         unsafe {
             let vt = self.0.vtable::<IModuleVtable>();
@@ -226,22 +226,12 @@ impl Module {
             if hr < 0 || ptr.is_null() {
                 None
             } else {
-                Some(EntryPoint(ComPtr::from_owned(ptr as *mut c_void)))
+                Some(ComponentType(ComPtr::from_owned(ptr as *mut c_void)))
             }
         }
     }
 
     /// Module inherits IComponentType, same COM pointer
-    pub fn as_component_type(&self) -> &ComponentType {
-        unsafe { std::mem::transmute(self) }
-    }
-}
-
-#[allow(dead_code)] // field used structurally for Drop ref-count release
-pub struct EntryPoint(ComPtr);
-
-impl EntryPoint {
-    /// EntryPoint inherits IComponentType, same COM pointer
     pub fn as_component_type(&self) -> &ComponentType {
         unsafe { std::mem::transmute(self) }
     }
