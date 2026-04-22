@@ -26,57 +26,57 @@ void main(
     static groupshared float max_vals[WG_SIZE];
     static groupshared float sum_vals[WG_SIZE];
 
-    // Initialize shared memory
-    max_vals[local_id] = -3.402823466e+38f; // -FLT_MAX
-    sum_vals[local_id] = 0.0f;
-
     // Calculate base index for this batch
     uint base_idx = batch_idx * pc.feature_size;
 
-    // Find maximum in this batch (for numerical stability)
-    for (uint i = local_id; i < pc.feature_size; i = i + WG_SIZE)
+    float local_max = -3.402823466e+38f; // -FLT_MAX
+    float local_sum = 0.0f;
+
+    // Pass 1: Compute local max and sum simultaneously (Online Softmax)
+    for (uint i = local_id; i < pc.feature_size; i += WG_SIZE)
     {
-        max_vals[local_id] = max(max_vals[local_id], src[base_idx + i]);
+        float val = src[base_idx + i];
+        if (val > local_max)
+        {
+            local_sum = local_sum * exp(local_max - val) + 1.0f;
+            local_max = val;
+        }
+        else
+        {
+            local_sum += exp(val - local_max);
+        }
     }
 
-    // Reduction to find the maximum
+    max_vals[local_id] = local_max;
+    sum_vals[local_id] = local_sum;
+
+    // Reduction to find the global maximum and sum
     GroupMemoryBarrierWithGroupSync();
     for (uint stride = WG_SIZE / 2; stride > 0; stride = stride / 2)
     {
         if (local_id < stride)
         {
-            max_vals[local_id] = max(max_vals[local_id], max_vals[local_id + stride]);
+            float m1 = max_vals[local_id];
+            float s1 = sum_vals[local_id];
+            float m2 = max_vals[local_id + stride];
+            float s2 = sum_vals[local_id + stride];
+
+            float m_new = max(m1, m2);
+            float s_new = s1 * exp(m1 - m_new) + s2 * exp(m2 - m_new);
+
+            max_vals[local_id] = m_new;
+            sum_vals[local_id] = s_new;
         }
         GroupMemoryBarrierWithGroupSync();
     }
 
-    float max_val = max_vals[0];
+    float final_max = max_vals[0];
+    float final_sum = sum_vals[0];
 
-    // Compute exponentials and partial sums
-    for (uint i = local_id; i < pc.feature_size; i = i + WG_SIZE)
+    // Pass 2: Compute final normalized value
+    for (uint i = local_id; i < pc.feature_size; i += WG_SIZE)
     {
         uint idx = base_idx + i;
-        float exp_val = exp(src[idx] - max_val);
-        dst[idx] = exp_val;
-        sum_vals[local_id] = sum_vals[local_id] + exp_val;
-    }
-
-    GroupMemoryBarrierWithGroupSync();
-    for (uint stride = WG_SIZE / 2; stride > 0; stride = stride / 2)
-    {
-        if (local_id < stride)
-        {
-            sum_vals[local_id] = sum_vals[local_id] + sum_vals[local_id + stride];
-        }
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-    float sum = sum_vals[0];
-
-    // Normalize by sum
-    for (uint i = local_id; i < pc.feature_size; i = i + WG_SIZE)
-    {
-        uint idx = base_idx + i;
-        dst[idx] = dst[idx] / sum;
+        dst[idx] = exp(src[idx] - final_max) / final_sum;
     }
 }
