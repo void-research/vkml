@@ -421,7 +421,9 @@ fn execute_gpu_matmul(
 
         // Tile size selection: [tile_size, threads, shmem_required_bytes, operation]
         let variants = [
+            (32, [32, 32, 1], 8192, GPUOperation::MatMul_2D2D_Tiled_32x32),
             (16, [16, 16, 1], 2048, GPUOperation::MatMul_2D2D_Tiled_16x16),
+            (8, [8, 8, 1], 512, GPUOperation::MatMul_2D2D_Tiled_8x8),
         ];
 
         // Select best tile size based on shared memory AND matrix dimensions
