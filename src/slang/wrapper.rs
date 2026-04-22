@@ -67,28 +67,25 @@ unsafe fn extract_diagnostics(diag: *mut ISlangBlob) -> Option<String> {
         return None;
     }
     unsafe {
-        let vt = &**(diag as *mut *mut IBlobVtable);
-        let ptr = (vt.getBufferPointer)(diag as *mut _);
-        let len = (vt.getBufferSize)(diag as *mut _);
-        let msg = if len > 0 && !ptr.is_null() {
-            let slice = std::slice::from_raw_parts(ptr as *const u8, len);
+        let ptr = ComPtr::from_owned(diag as *mut c_void);
+        let vt = ptr.vtable::<IBlobVtable>();
+        let buf = (vt.getBufferPointer)(ptr.as_ptr() as *mut _);
+        let len = (vt.getBufferSize)(ptr.as_ptr() as *mut _);
+
+        if len > 0 && !buf.is_null() {
+            let slice = std::slice::from_raw_parts(buf as *const u8, len);
             std::str::from_utf8(slice).ok().map(|s| s.to_owned())
         } else {
             None
-        };
-        let unknown_vt = &**(diag as *mut *mut ISlangUnknown__bindgen_vtable);
-        (unknown_vt.ISlangUnknown_release)(diag as *mut _);
-        msg
+        }
     }
 }
 
 unsafe fn check(hr: SlangResult, diag: *mut ISlangBlob) -> Result<(), VKMLError> {
     unsafe {
         if hr >= 0 {
-            // success — still release diagnostics (may contain warnings)
             if !diag.is_null() {
-                let unknown_vt = &**(diag as *mut *mut ISlangUnknown__bindgen_vtable);
-                (unknown_vt.ISlangUnknown_release)(diag as *mut _);
+                ComPtr::from_owned(diag as *mut c_void); // auto-release
             }
             Ok(())
         } else {
@@ -236,7 +233,7 @@ impl Module {
 
     /// Module inherits IComponentType, same COM pointer
     pub fn as_component_type(&self) -> &ComponentType {
-        unsafe { &*(self as *const Module as *const ComponentType) }
+        unsafe { std::mem::transmute(self) }
     }
 }
 
