@@ -1,12 +1,12 @@
 use crate::{tensor::TensorDesc, utils::OnnxAutoPad};
 
 use super::{
+    Layer,
     activations::{ActivationLayer, ActivationType},
     concat::ConcatLayer,
     conv::ConvLayer,
     element_wise::{ElementWiseLayer, ElementWiseOperation},
     input_buffer::InputLayer,
-    layer::Layer,
     linear::LinearLayer,
     reshape::ReshapeLayer,
 };

@@ -1,49 +1,91 @@
 mod add;
-pub use add::AddInstruction;
 mod concat;
-pub use concat::ConcatInstruction;
 mod conv;
-pub use conv::ConvInstruction;
 mod div;
-pub use div::DivInstruction;
 mod expand;
-pub use expand::ExpandInstruction;
 mod gemm;
-pub use gemm::GemmInstruction;
 mod gpu_operations;
-pub use gpu_operations::GPUOperation;
 mod identity;
-pub use identity::IdentityInstruction;
-mod instruction;
-pub use instruction::Instruction;
 mod matmul;
-pub use matmul::MatMulInstruction;
 mod max;
-pub use max::MaxInstruction;
 mod maxpool;
-pub use maxpool::MaxPoolInstruction;
 mod min;
-pub use min::MinInstruction;
 mod mul;
-pub use mul::MulInstruction;
-mod relu;
-pub use relu::ReLUInstruction;
 mod reducemean;
-pub use reducemean::ReduceMeanInstruction;
+mod relu;
 mod reshape;
-pub use reshape::ReshapeInstruction;
 mod shape;
-pub use shape::ShapeInstruction;
 mod sigmoid;
-pub use sigmoid::SigmoidInstruction;
 mod softmax;
-pub use softmax::SoftmaxInstruction;
 mod sub;
-pub use sub::SubInstruction;
 mod transfer;
+
+pub use add::AddInstruction;
+pub use concat::ConcatInstruction;
+pub use conv::ConvInstruction;
+pub use div::DivInstruction;
+pub use expand::ExpandInstruction;
+pub use gemm::GemmInstruction;
+pub use gpu_operations::GPUOperation;
+pub use identity::IdentityInstruction;
+
+pub use matmul::MatMulInstruction;
+pub use max::MaxInstruction;
+pub use maxpool::MaxPoolInstruction;
+pub use min::MinInstruction;
+pub use mul::MulInstruction;
+pub use reducemean::ReduceMeanInstruction;
+pub use relu::ReLUInstruction;
+pub use reshape::ReshapeInstruction;
+pub use shape::ShapeInstruction;
+pub use sigmoid::SigmoidInstruction;
+pub use softmax::SoftmaxInstruction;
+pub use sub::SubInstruction;
 pub use transfer::TransferToDeviceInstruction;
 
-use crate::{tensor::DeviceId, tensor_graph::TensorId, utils::OnnxAutoPad};
+use crate::{
+    ComputeManager,
+    gpu::vk_gpu::Gpu,
+    tensor::DeviceId,
+    tensor_graph::TensorId,
+    utils::{OnnxAutoPad, error::VKMLError},
+};
+use std::fmt::Debug;
+use vulkanalia::vk;
+
+pub trait Instruction: Debug {
+    // Get all input tensor IDs used by this instruction
+    fn get_input_tensor_ids(&self) -> Vec<TensorId>;
+
+    // Get all output tensor IDs for this instruction
+    fn get_output_tensor_ids(&self) -> Vec<TensorId>;
+
+    // Remap tensor IDs (used during graph construction)
+    fn remap_tensor_ids(&mut self, new_inputs: &[TensorId], new_outputs: &[TensorId]);
+
+    // Record this instruction into an already begun command buffer
+    fn record_into_command_buffer(
+        &self,
+        _gpu: &Gpu,
+        _command_buffer: vk::CommandBuffer,
+        _cm: &ComputeManager,
+    ) -> Result<(), VKMLError> {
+        Err(VKMLError::Vulkan(format!(
+            "GPU execution not implemented for {:?}",
+            self
+        )))
+    }
+
+    // Execute on CPU (default implementation returns error)
+    fn execute_cpu(&self, _cm: &ComputeManager) {
+        panic!("CPU execution not implemented for {:?}", self)
+    }
+
+    // Return true if this instruction must be executed on the CPU (eg transfers)
+    fn must_execute_on_cpu(&self) -> bool {
+        false
+    }
+}
 
 pub fn add(src1: TensorId, src2: TensorId, dst: TensorId) -> Box<dyn Instruction> {
     Box::new(AddInstruction { src1, src2, dst })

@@ -1,2 +1,72 @@
-mod identity;
-pub use identity::IdentityInstruction;
+use crate::VKMLError;
+use crate::{ComputeManager, gpu::vk_gpu::Gpu, instruction::Instruction, tensor_graph::TensorId};
+use std::fmt::{Debug, Formatter, Result as FmtResult};
+use vulkanalia::{vk, vk::DeviceV1_0};
+
+pub struct IdentityInstruction {
+    pub src: TensorId,
+    pub dst: TensorId,
+}
+
+impl Debug for IdentityInstruction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "Copy(src={}, dst={})", self.src, self.dst)
+    }
+}
+
+impl Instruction for IdentityInstruction {
+    fn get_input_tensor_ids(&self) -> Vec<TensorId> {
+        vec![self.src]
+    }
+
+    fn get_output_tensor_ids(&self) -> Vec<TensorId> {
+        vec![self.dst]
+    }
+
+    fn remap_tensor_ids(&mut self, new_inputs: &[TensorId], new_outputs: &[TensorId]) {
+        if !new_inputs.is_empty() {
+            self.src = new_inputs[0];
+        }
+
+        if !new_outputs.is_empty() {
+            self.dst = new_outputs[0];
+        }
+    }
+
+    fn record_into_command_buffer(
+        &self,
+        gpu: &Gpu,
+        command_buffer: vk::CommandBuffer,
+        cm: &ComputeManager,
+    ) -> Result<(), VKMLError> {
+        let src_tensor = cm.tensor_read(self.src);
+        let src_mem = src_tensor.get_gpu_memory_or_panic();
+        let dst_tensor = cm.tensor_read(self.dst);
+        let dst_mem = dst_tensor.get_gpu_memory_or_panic();
+
+        unsafe {
+            // Copy regions - entire buffer
+            let copy_region = vk::BufferCopy {
+                src_offset: 0,
+                dst_offset: 0,
+                size: src_mem.size,
+            };
+
+            gpu.get_device().cmd_copy_buffer(
+                command_buffer,
+                src_mem.buffer,
+                dst_mem.buffer,
+                &[copy_region],
+            );
+        }
+
+        Ok(())
+    }
+
+    fn execute_cpu(&self, cm: &ComputeManager) {
+        let src_tensor = cm.tensor_read(self.src);
+        let dst_tensor = cm.tensor_write(self.dst);
+
+        dst_tensor.write(&src_tensor.read());
+    }
+}

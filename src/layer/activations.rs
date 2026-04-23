@@ -1,6 +1,6 @@
 use crate::{instruction, tensor::TensorDesc, utils::error::VKMLError};
 
-use super::{execution::LayerExecution, layer::Layer};
+use super::{Layer, execution::LayerExecution};
 
 pub trait ActivationFunction: Clone {
     fn name(&self) -> String;

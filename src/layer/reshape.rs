@@ -2,7 +2,7 @@ use onnx_extractor::DataType;
 
 use crate::{instruction, tensor::TensorDesc, utils::error::VKMLError};
 
-use super::{execution::LayerExecution, layer::Layer};
+use super::{Layer, execution::LayerExecution};
 
 #[derive(Clone)]
 pub struct ReshapeLayer {

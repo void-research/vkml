@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    instruction::Instruction, layer::layer::Layer, tensor::TensorDesc, utils::error::VKMLError,
+    instruction::Instruction, layer::Layer, tensor::TensorDesc, utils::error::VKMLError,
     weight_initialiser::Initialiser,
 };
 
