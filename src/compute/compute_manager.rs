@@ -195,12 +195,11 @@ impl ComputeManager {
             vec![None; self.tensor_graph.tensor_descs.len()];
 
         // Maintain a list of tensor remappings per tensor: tensor_id -> [(device, new_id)]
-        // Most tensors have 0-1 remappings, so a small Vec is more efficient than HashMap
         let mut tensor_remappings: Vec<Vec<(DeviceId, usize)>> =
             vec![Vec::new(); self.tensor_graph.tensor_descs.len()];
 
         // Store remappings needed for operations: indexed by op_id
-        let mut operation_remappings: Vec<Option<(Vec<usize>, Vec<usize>)>> =
+        let mut operation_remappings: Vec<Option<(Vec<TensorId>, Vec<TensorId>)>> =
             vec![None; self.tensor_graph.operations.len()];
 
         // New tensors created for transfers or device-local outputs - including layer info
@@ -209,188 +208,111 @@ impl ComputeManager {
         // Transfer operations to insert: (insert_before_op, transfer_instr)
         let mut transfer_operations: Vec<(OperationId, Box<dyn Instruction>)> = Vec::new();
 
-        // Track available memory per device in the desired order (GPUs then CPU)
-        let mut available_memory: Vec<(DeviceId, u64)> = Vec::new();
-        for (idx, gpu) in self.gpus.gpus().iter().enumerate() {
-            available_memory.push((DeviceId::Gpu(idx), gpu.memory_available()));
-        }
+        // Track available memory per device (GPUs then CPU)
+        let mut available_memory: Vec<(DeviceId, u64)> = self
+            .gpus
+            .gpus()
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (DeviceId::Gpu(i), g.memory_available()))
+            .collect();
         available_memory.push((DeviceId::Cpu, self.cpu.memory_tracking.get_available()));
 
-        // Helper to get tensor size
-        let tensor_size =
-            |tid: usize| -> u64 { self.tensor_graph.tensor_descs[tid].size_in_bytes() as u64 };
+        let tensor_size = |tid: usize| self.tensor_graph.tensor_descs[tid].size_in_bytes() as u64;
 
-        // For each operation in execution order, pick the first device (GPUs in order, CPU last)
         for &op_id in flattened_ops {
             let instruction = &self.tensor_graph.operations[op_id];
             let input_tensors = instruction.get_input_tensor_ids();
             let output_tensors = instruction.get_output_tensor_ids();
 
-            // Compute required memory for this op on a candidate device.
-            // We must include sizes for: unallocated tensors and remapped tensors (transfers)
-            let mut chosen_device_idx: Option<usize> = None;
-
-            'device_search: for (dev_idx, (cand_device, available)) in
-                available_memory.iter().enumerate()
-            {
-                let mut needed: u64 = 0;
-
-                // Inputs
-                for &tid in &input_tensors {
-                    match &tensor_locations[tid] {
-                        None => {
-                            // unallocated -> will be allocated here
-                            needed = needed.saturating_add(tensor_size(tid));
+            let dev_idx = available_memory
+                .iter()
+                .position(|(cand_device, available)| {
+                    let mut needed = 0u64;
+                    for &tid in input_tensors.iter().chain(output_tensors.iter()) {
+                        match &tensor_locations[tid] {
+                            None => needed = needed.saturating_add(tensor_size(tid)),
+                            Some(loc)
+                                if loc != cand_device
+                                    && !tensor_remappings[tid]
+                                        .iter()
+                                        .any(|(d, _)| d == cand_device) =>
+                            {
+                                needed = needed.saturating_add(tensor_size(tid));
+                            }
+                            _ => {}
                         }
-                        Some(loc)
-                            if loc != cand_device
-                            // already allocated elsewhere -> we need to create a remapped tensor here
-                            && !tensor_remappings[tid]
-                                .iter()
-                                .any(|(dev, _)| dev == cand_device) =>
-                        {
-                            needed = needed.saturating_add(tensor_size(tid));
-                        }
-                        _ => {}
                     }
-                }
-
-                // Outputs
-                for &tid in &output_tensors {
-                    match &tensor_locations[tid] {
-                        None => {
-                            needed = needed.saturating_add(tensor_size(tid));
-                        }
-                        Some(loc)
-                            if loc != cand_device
-                                && !tensor_remappings[tid]
-                                    .iter()
-                                    .any(|(dev, _)| dev == cand_device) =>
-                        {
-                            needed = needed.saturating_add(tensor_size(tid));
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Check if candidate device has enough available memory
-                if needed <= *available {
-                    chosen_device_idx = Some(dev_idx);
-                    break 'device_search;
-                }
-            }
-
-            let dev_idx = match chosen_device_idx {
-                Some(i) => i,
-                None => {
-                    return Err(VKMLError::ComputeManager(format!(
-                        "Operation {:?} cannot fit on any device during planning",
+                    needed <= *available
+                })
+                .ok_or_else(|| {
+                    VKMLError::ComputeManager(format!(
+                        "Operation {:?} cannot fit on any device",
                         op_id
-                    )));
-                }
-            };
+                    ))
+                })?;
 
             let current_device = available_memory[dev_idx].0;
 
             // Prepare new input/output lists for remapping
-            let mut new_inputs = Vec::with_capacity(input_tensors.len());
-            let mut new_outputs = Vec::with_capacity(output_tensors.len());
             let mut remapping_needed = false;
-
-            // Handle inputs
-            for &tid in &input_tensors {
-                match &tensor_locations[tid] {
-                    None => {
-                        // allocate original tensor on this device
-                        tensor_locations[tid] = Some(current_device);
-                        let sz = tensor_size(tid);
-                        available_memory[dev_idx].1 =
-                            available_memory[dev_idx].1.saturating_sub(sz);
-                        new_inputs.push(tid);
-                    }
-                    Some(loc) if loc != &current_device => {
-                        if let Some(&(_, mapped_id)) = tensor_remappings[tid]
-                            .iter()
-                            .find(|(dev, _)| dev == &current_device)
-                        {
-                            new_inputs.push(mapped_id);
-                            remapping_needed = true;
-                        } else {
-                            // create a new tensor descriptor for the transfer target
-                            let new_tensor_id =
-                                self.tensor_graph.tensor_descs.len() + new_tensors.len();
-                            let original_desc = &self.tensor_graph.tensor_descs[tid];
-                            let original_layer_id = self.tensor_graph.tensor_to_layer[tid];
-                            let tensor_desc = original_desc.clone();
-                            let sz = tensor_desc.size_in_bytes() as u64;
-
-                            // reserve memory on the chosen device
+            let mut process_tensors = |tensors: &[TensorId], is_input: bool| -> Vec<TensorId> {
+                let mut result = Vec::with_capacity(tensors.len());
+                for &tid in tensors {
+                    match &tensor_locations[tid] {
+                        None => {
+                            // Allocate original tensor on this device
+                            tensor_locations[tid] = Some(current_device);
                             available_memory[dev_idx].1 =
-                                available_memory[dev_idx].1.saturating_sub(sz);
-
-                            new_tensors.push((tensor_desc, current_device, original_layer_id));
-
-                            // create transfer instruction from src -> dst and schedule it before this op
-                            let src_device = tensor_locations[tid].unwrap();
-                            let transfer_instr = instruction::transfer(
-                                tid,
-                                new_tensor_id,
-                                src_device,
-                                current_device,
-                            );
-                            transfer_operations.push((op_id, transfer_instr));
-
-                            tensor_remappings[tid].push((current_device, new_tensor_id));
-                            new_inputs.push(new_tensor_id);
-                            remapping_needed = true;
+                                available_memory[dev_idx].1.saturating_sub(tensor_size(tid));
+                            result.push(tid);
                         }
-                    }
-                    _ => {
-                        // already on this device
-                        new_inputs.push(tid);
+                        Some(loc) if loc != &current_device => {
+                            if let Some(&(_, mapped_id)) = tensor_remappings[tid]
+                                .iter()
+                                .find(|(dev, _)| dev == &current_device)
+                            {
+                                result.push(mapped_id);
+                                remapping_needed = true;
+                            } else {
+                                let new_tensor_id =
+                                    self.tensor_graph.tensor_descs.len() + new_tensors.len();
+                                let original_desc = &self.tensor_graph.tensor_descs[tid];
+                                let original_layer_id = self.tensor_graph.tensor_to_layer[tid];
+                                let sz = original_desc.size_in_bytes() as u64;
+
+                                available_memory[dev_idx].1 =
+                                    available_memory[dev_idx].1.saturating_sub(sz);
+                                new_tensors.push((
+                                    original_desc.clone(),
+                                    current_device,
+                                    original_layer_id,
+                                ));
+
+                                if is_input {
+                                    let src_device = tensor_locations[tid].unwrap();
+                                    let transfer_instr = instruction::transfer(
+                                        tid,
+                                        new_tensor_id,
+                                        src_device,
+                                        current_device,
+                                    );
+                                    transfer_operations.push((op_id, transfer_instr));
+                                }
+
+                                tensor_remappings[tid].push((current_device, new_tensor_id));
+                                result.push(new_tensor_id);
+                                remapping_needed = true;
+                            }
+                        }
+                        _ => result.push(tid), // Already on this device
                     }
                 }
-            }
+                result
+            };
 
-            // Handle outputs
-            for &tid in &output_tensors {
-                match &tensor_locations[tid] {
-                    None => {
-                        tensor_locations[tid] = Some(current_device);
-                        let sz = tensor_size(tid);
-                        available_memory[dev_idx].1 =
-                            available_memory[dev_idx].1.saturating_sub(sz);
-                        new_outputs.push(tid);
-                    }
-                    Some(loc) if loc != &current_device => {
-                        if let Some(&(_, mapped_id)) = tensor_remappings[tid]
-                            .iter()
-                            .find(|(dev, _)| dev == &current_device)
-                        {
-                            new_outputs.push(mapped_id);
-                            remapping_needed = true;
-                        } else {
-                            let new_tensor_id =
-                                self.tensor_graph.tensor_descs.len() + new_tensors.len();
-                            let original_desc = &self.tensor_graph.tensor_descs[tid];
-                            let original_layer_id = self.tensor_graph.tensor_to_layer[tid];
-                            let tensor_desc = original_desc.clone();
-                            let sz = tensor_desc.size_in_bytes() as u64;
-
-                            available_memory[dev_idx].1 =
-                                available_memory[dev_idx].1.saturating_sub(sz);
-
-                            new_tensors.push((tensor_desc, current_device, original_layer_id));
-                            tensor_remappings[tid].push((current_device, new_tensor_id));
-                            new_outputs.push(new_tensor_id);
-                            remapping_needed = true;
-                        }
-                    }
-                    _ => {
-                        new_outputs.push(tid);
-                    }
-                }
-            }
+            let new_inputs = process_tensors(&input_tensors, true);
+            let new_outputs = process_tensors(&output_tensors, false);
 
             if remapping_needed {
                 operation_remappings[op_id] = Some((new_inputs, new_outputs));
@@ -424,7 +346,7 @@ impl ComputeManager {
         let original_ops = std::mem::take(&mut self.tensor_graph.operations);
         let original_op_layers = std::mem::take(&mut self.tensor_graph.operation_to_layer);
 
-        // Prepare a per-op list of transfers (with their intended layer id)
+        // Prepare a per-op list of transfers
         let mut transfers_for_op: Vec<Vec<(Box<dyn Instruction>, Option<LayerId>)>> =
             (0..original_ops.len()).map(|_| Vec::new()).collect();
 
@@ -435,19 +357,19 @@ impl ComputeManager {
             transfers_for_op[op_idx].push((transfer_instr, Some(layer_id)));
         }
 
-        let mut new_ops: Vec<Box<dyn Instruction>> = Vec::with_capacity(
-            transfers_for_op.iter().map(|v| v.len()).sum::<usize>() + original_ops.len(),
+        let mut new_ops = Vec::with_capacity(
+            original_ops.len() + transfers_for_op.iter().map(|v| v.len()).sum::<usize>(),
         );
-        let mut new_op_layers: Vec<Option<LayerId>> = Vec::with_capacity(new_ops.capacity());
+        let mut new_op_layers = Vec::with_capacity(new_ops.capacity());
 
         for (i, mut orig_op) in original_ops.into_iter().enumerate() {
-            // insert any transfers scheduled before this op
+            // Insert any transfers scheduled before this op
             for (transfer_instr, layer_id) in transfers_for_op[i].drain(..) {
                 new_op_layers.push(layer_id);
                 new_ops.push(transfer_instr);
             }
 
-            // apply remap to the original op if needed
+            // Apply remap to the original op if needed
             if let Some((new_inputs, new_outputs)) =
                 operation_remappings.get(i).and_then(|o| o.clone())
             {
