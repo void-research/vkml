@@ -170,12 +170,12 @@ impl GPUOperation {
     }
 
     pub fn is_fp_specialized(&self) -> bool {
-        match self {
+        matches!(
+            self,
             GPUOperation::Sigmoid_FP32
-            | GPUOperation::Sigmoid_FP16
-            | GPUOperation::Softmax_FP32
-            | GPUOperation::Softmax_FP16 => true,
-            _ => false,
-        }
+                | GPUOperation::Sigmoid_FP16
+                | GPUOperation::Softmax_FP32
+                | GPUOperation::Softmax_FP16
+        )
     }
 }
