@@ -31,7 +31,7 @@ fn test_mnist_mlp_fp32() -> Result<(), Box<dyn std::error::Error>> {
     let file_path = get_test_data_path("mnist_mlp_png_probs.onnx");
     let file = file_path.to_str().unwrap();
 
-    let mut cm = ComputeManager::new_from_onnx_path_with(file, None, None, 1)?;
+    let mut cm = ComputeManager::new_from_onnx_path(file)?;
 
     let img0_path = get_test_data_path("0.png");
     let img1_path = get_test_data_path("1.png");
@@ -92,7 +92,7 @@ fn test_mnist_12_fp32() -> Result<(), Box<dyn std::error::Error>> {
     let file_path = get_test_data_path("mnist-12.onnx");
     let file = file_path.to_str().unwrap();
 
-    let mut cm = ComputeManager::new_from_onnx_path_with(file, None, None, 1)?;
+    let mut cm = ComputeManager::new_from_onnx_path(file)?;
 
     let img0_path = get_test_data_path("0.png");
     let img1_path = get_test_data_path("1.png");
@@ -151,7 +151,7 @@ fn test_multi_chain_add_fp32() -> Result<(), Box<dyn std::error::Error>> {
     let file_path = get_test_data_path("multi_chain_add-10.onnx");
     let file = file_path.to_str().unwrap();
 
-    let mut cm = ComputeManager::new_from_onnx_path_with(file, None, None, 1)?;
+    let mut cm = ComputeManager::new_from_onnx_path(file)?;
 
     let input_ids = cm.tensor_graph.get_input_tensor_ids().to_vec();
     let input_desc = cm.tensor_read(input_ids[0]).desc().clone();
