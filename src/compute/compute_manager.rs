@@ -25,6 +25,7 @@ use crate::{
 };
 
 use super::cpu_compute::CPUCompute;
+use super::optimisations::Optimisations;
 
 pub struct ComputeManager {
     pub tensors: Vec<TensorCell>,
@@ -37,17 +38,20 @@ pub struct ComputeManager {
 
     cached_plan: Option<Arc<ExecutionPlan>>,
     cached_dependency_graph: Option<DependencyGraph>,
+
+    optimisations: Optimisations,
 }
 
 impl ComputeManager {
     pub fn new_from_graph(model: GraphModel) -> Result<Self, VKMLError> {
-        Self::new_from_graph_with(model, None, None)
+        Self::new_from_graph_with(model, None, None, Optimisations::default())
     }
 
     pub fn new_from_graph_with(
         mut model: GraphModel,
         explicit_gpus: Option<Vec<usize>>,
         cpu_memory_limit_bytes: Option<u64>,
+        optimisations: Optimisations,
     ) -> Result<Self, VKMLError> {
         if model.verified.is_none() {
             model.verify()?;
@@ -65,6 +69,7 @@ impl ComputeManager {
             cpu,
             cached_plan: None,
             cached_dependency_graph: None,
+            optimisations,
         };
 
         let total_memory = manager.tensor_graph.memory_requirements as u64;
@@ -88,7 +93,7 @@ impl ComputeManager {
     }
 
     pub fn new_from_onnx_path(onnx_path: &str) -> Result<Self, VKMLError> {
-        Self::new_from_onnx_path_with(onnx_path, None, None, 1)
+        Self::new_from_onnx_path_with(onnx_path, None, None, 1, Optimisations::default())
     }
 
     /// Create ComputeManager from ONNX file with custom settings
@@ -97,6 +102,7 @@ impl ComputeManager {
         explicit_gpus: Option<Vec<usize>>,
         cpu_memory_limit_bytes: Option<u64>,
         batch_size: usize,
+        optimisations: Optimisations,
     ) -> Result<Self, VKMLError> {
         assert!(batch_size > 0, "batch_size must be greater than 0");
 
@@ -114,6 +120,7 @@ impl ComputeManager {
             tensor_bytes,
             GpuPool::new(explicit_gpus)?,
             cpu_memory_limit_bytes,
+            optimisations,
         )
     }
 
@@ -122,6 +129,7 @@ impl ComputeManager {
         initialisers: Vec<Initialiser>,
         gpus: GpuPool,
         cpu_memory_limit_bytes: Option<u64>,
+        optimisations: Optimisations,
     ) -> Result<Self, VKMLError> {
         let cpu = CPUCompute::new(cpu_memory_limit_bytes);
 
@@ -137,6 +145,7 @@ impl ComputeManager {
             tensor_graph,
             cached_plan: None,
             cached_dependency_graph: None,
+            optimisations,
         };
 
         let total_memory = manager.tensor_graph.memory_requirements as u64;
@@ -650,6 +659,10 @@ impl ComputeManager {
 
     pub fn print_gpu_pool(&self) {
         println!("{:?}", self.gpus)
+    }
+
+    pub fn chosen_optimisations(&self) -> &Optimisations {
+        &self.optimisations
     }
 
     pub fn tensor_read(&self, tensor_id: usize) -> &Tensor {

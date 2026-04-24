@@ -27,6 +27,7 @@ mod importers;
 mod weight_initialiser;
 
 pub use compute::compute_manager::ComputeManager;
+pub use compute::optimisations::Optimisations;
 pub use importers::onnx_parser;
 pub use layer::factory::Layers;
 pub use model::{graph_model::GraphModel, layer_connection::LayerConnection};
