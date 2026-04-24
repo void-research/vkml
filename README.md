@@ -17,6 +17,23 @@ The project aims to provide abstractions at a level similar to PyTorch with defa
 - Multi-vendor GPU systems (Nvidia, AMD, Intel, Qualcomm, and more)
 - GPU and CPU model inference
 
+## Usage
+Loading and executing an ONNX model. This example creates the input tensor on the CPU, runs the model on the GPU, then reads the output back to the CPU:
+```rust
+use vkml::{ComputeManager, DataType, Tensor, TensorDesc, VKMLError};
+
+fn main() -> Result<(), VKMLError> {
+    let mut manager = ComputeManager::new_from_onnx_path("mnist-12.onnx")?;
+
+    let desc = TensorDesc::new(vec![1, 1, 28, 28], DataType::Float);
+    let input = Tensor::new_cpu(desc.clone(), vec![0u8; desc.size_in_bytes()].into());
+
+    let out_ids = manager.forward(vec![input])?;
+    let outputs = manager.tensor_read_vec(&out_ids);
+    Ok(())
+}
+```
+
 ## Current Implementation Details (Assumptions, Descisions and Todo's)
 
 ### Overall Todo's
