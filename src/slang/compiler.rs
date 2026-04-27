@@ -1,7 +1,7 @@
 use crate::instruction::GPUOperation;
 use crate::slang::wrapper::{
-    Blob, CompileTarget, CompilerOptions, FloatingPointMode, GlobalSession, OptimizationLevel,
-    Session, SessionDesc, TargetDesc,
+    Blob, CompileTarget, CompilerOptions, ComponentType, FloatingPointMode, GlobalSession,
+    OptimizationLevel, Session, SessionDesc, TargetDesc,
 };
 use crate::utils::dtype::onnx_dtype_to_slang_type;
 use crate::utils::error::VKMLError;
@@ -13,6 +13,7 @@ use std::sync::{LazyLock, RwLock};
 /// internal dictionaries and reflection caches are not thread-safe
 pub struct SlangContext {
     pub session: Session,
+    pub module_cache: HashMap<GPUOperation, ComponentType>,
     pub blob_cache: HashMap<(GPUOperation, DataType), Blob>,
 }
 
@@ -41,6 +42,7 @@ pub static SLANG_CONTEXT: LazyLock<RwLock<SlangContext>> = LazyLock::new(|| {
 
     RwLock::new(SlangContext {
         session,
+        module_cache: HashMap::new(),
         blob_cache: HashMap::new(),
     })
 });
@@ -62,26 +64,34 @@ pub fn compile(op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
         return Ok(blob.clone());
     }
 
-    // 3. Load module and find entry point
-    let module_name = op.as_str();
-    let source_string = op.to_slang_shader()?;
+    // 3. Load or reuse program (module + entry point)
+    let program = match ctx.module_cache.get(&op) {
+        Some(program) => program.clone(),
+        None => {
+            let module_name = op.as_str();
+            let source_string = op.to_slang_shader()?;
 
-    let virtual_path = format!("{module_name}.slang");
-    let module = ctx
-        .session
-        .load_module_from_source(module_name, &virtual_path, source_string)?;
+            let virtual_path = format!("{module_name}.slang");
+            let module =
+                ctx.session
+                    .load_module_from_source(module_name, &virtual_path, source_string)?;
 
-    let entry_point = module.find_entry_point_by_name("main").ok_or_else(|| {
-        VKMLError::Slang(format!(
-            "Entry point 'main' not found in module {module_name}"
-        ))
-    })?;
+            let entry_point = module.find_entry_point_by_name("main").ok_or_else(|| {
+                VKMLError::Slang(format!(
+                    "Entry point 'main' not found in module {module_name}"
+                ))
+            })?;
 
-    // 4. Create program and specialize (if needed)
-    let program = ctx
-        .session
-        .create_composite_component_type(&[module.as_component_type(), &entry_point])?;
+            let program = ctx
+                .session
+                .create_composite_component_type(&[module.as_component_type(), &entry_point])?;
 
+            ctx.module_cache.insert(op, program.clone());
+            program
+        }
+    };
+
+    // 4. Specialize the program (if needed)
     let specialized_program = if op.is_fp_specialized() {
         program
     } else {
