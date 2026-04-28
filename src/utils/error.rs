@@ -3,10 +3,13 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum VKMLError {
     #[error("Vulkan error: {0}")]
-    Vulkan(String),
+    Vulkan(#[from] vulkanalia::vk::ErrorCode),
 
     #[error("Compute Manager error: {0}")]
     ComputeManager(String),
+
+    #[error("GPU error: {0}")]
+    Gpu(String),
 
     #[error("GPU Pool error: {0}")]
     GpuPool(String),
@@ -31,20 +34,4 @@ pub enum VKMLError {
 
     #[error("Slang error: {0}")]
     Slang(String),
-
-    #[error("spirv-opt error: {0}")]
-    SpirvOpt(String),
-}
-
-// Convert vk::Result (Vulkan return codes) into VKMLError
-impl From<vulkanalia::vk::Result> for VKMLError {
-    fn from(r: vulkanalia::vk::Result) -> Self {
-        VKMLError::Vulkan(format!("vk::Result: {:?}", r))
-    }
-}
-
-impl From<vulkanalia::vk::ErrorCode> for VKMLError {
-    fn from(c: vulkanalia::vk::ErrorCode) -> Self {
-        VKMLError::Vulkan(format!("vk::ErrorCode: {:?}", c))
-    }
 }

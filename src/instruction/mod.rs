@@ -70,7 +70,7 @@ pub trait Instruction: Debug {
         _command_buffer: vk::CommandBuffer,
         _cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        Err(VKMLError::Vulkan(format!(
+        Err(VKMLError::Instruction(format!(
             "GPU execution not implemented for {:?}",
             self
         )))

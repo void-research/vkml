@@ -394,7 +394,7 @@ impl GpuAllocator {
         );
 
         if data.len() as vk::DeviceSize > dest.size {
-            return Err(VKMLError::Vulkan(format!(
+            return Err(VKMLError::Gpu(format!(
                 "Attempted to write {} bytes into buffer sized {}",
                 data.len(),
                 dest.size
@@ -406,7 +406,7 @@ impl GpuAllocator {
         let staging_size = staging_guard.buffer.size as usize;
 
         if staging_size == 0 {
-            return Err(VKMLError::Vulkan(
+            return Err(VKMLError::Gpu(
                 "Staging buffer must be at least 1 byte".to_string(),
             ));
         }
@@ -476,7 +476,7 @@ impl GpuAllocator {
         let staging_size = staging_guard.buffer.size as usize;
 
         if staging_size == 0 {
-            return Err(VKMLError::Vulkan(
+            return Err(VKMLError::Gpu(
                 "Staging buffer must be at least 1 byte".to_string(),
             ));
         }

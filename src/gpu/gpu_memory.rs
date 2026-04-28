@@ -33,7 +33,7 @@ impl GPUMemory {
 
     fn upgrade_gpu(&self) -> Result<Arc<Gpu>, VKMLError> {
         self.gpu.upgrade().ok_or_else(|| {
-            VKMLError::Vulkan("GPU allocation reference dropped before use".to_string())
+            VKMLError::Gpu("GPU allocation reference dropped before use".to_string())
         })
     }
 
@@ -42,7 +42,7 @@ impl GPUMemory {
         let data_size = data.len() as vk::DeviceSize;
 
         if data_size > self.size {
-            return Err(VKMLError::Vulkan(format!(
+            return Err(VKMLError::Gpu(format!(
                 "Data size {} exceeds GPU buffer size {}",
                 data_size, self.size
             )));
