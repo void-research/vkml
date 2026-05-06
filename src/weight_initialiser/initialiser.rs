@@ -1,4 +1,5 @@
-use onnx_extractor::Bytes;
+use bytemuck;
+use onnx_extractor::{Bytes, tensor::NumericData};
 
 #[derive(Default)]
 pub enum Initialiser {
@@ -8,6 +9,7 @@ pub enum Initialiser {
     BytesVec(Vec<Bytes>),
     OwnedBox(Box<[u8]>),
     OwnedVec(Vec<u8>),
+    NumericData(NumericData<'static>),
     Constant(Vec<u8>),
     Xavier,
     Uniform(f32, f32),
@@ -20,6 +22,7 @@ impl Initialiser {
             Initialiser::Bytes(bytes) => bytes.as_ref(),
             Initialiser::OwnedBox(boxed) => boxed.as_ref(),
             Initialiser::OwnedVec(vec) => vec.as_ref(),
+            Initialiser::NumericData(n) => n.as_slice(),
             Initialiser::Constant(vec) => vec.as_ref(),
 
             Initialiser::None => unimplemented!("None"),
@@ -44,6 +47,15 @@ impl Initialiser {
             }
             Initialiser::OwnedBox(boxed) => boxed,
             Initialiser::OwnedVec(vec) => vec.into(),
+            Initialiser::NumericData(n) => match n {
+                NumericData::Borrowed(b) => b.to_owned().into(),
+                NumericData::U8(v) => v.into(),
+                NumericData::F32(v) => bytemuck::cast_vec(v).into(),
+                NumericData::F64(v) => bytemuck::cast_vec(v).into(),
+                NumericData::I32(v) => bytemuck::cast_vec(v).into(),
+                NumericData::I64(v) => bytemuck::cast_vec(v).into(),
+                NumericData::U64(v) => bytemuck::cast_vec(v).into(),
+            },
             Initialiser::Constant(vec) => vec.into(),
 
             Initialiser::None => unimplemented!("None"),
