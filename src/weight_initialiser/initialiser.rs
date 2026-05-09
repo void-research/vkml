@@ -42,24 +42,18 @@ impl Initialiser {
     }
 
     // consumes self
+    // a lot of these will require a copy for now
     pub fn into_cpu_buffer(self) -> Box<[u8]> {
         match self {
             Initialiser::Bytes(bytes) => bytes.to_vec().into(),
-            Initialiser::VecBytes(parts) => {
-                let total_len: usize = parts.iter().map(|b| b.len()).sum();
-                let mut vec = Vec::with_capacity(total_len);
-                for bytes in parts {
-                    vec.extend_from_slice(&bytes);
-                }
-                vec.into()
-            }
+            Initialiser::VecBytes(parts) => parts.iter().flatten().copied().collect::<Box<[u8]>>(),
             Initialiser::BoxU8(boxed) => boxed,
             Initialiser::VecU8(vec) => vec.into(),
-            Initialiser::VecF32(v) => bytemuck::cast_vec(v).into(),
-            Initialiser::VecF64(v) => bytemuck::cast_vec(v).into(),
-            Initialiser::VecI32(v) => bytemuck::cast_vec(v).into(),
-            Initialiser::VecI64(v) => bytemuck::cast_vec(v).into(),
-            Initialiser::VecU64(v) => bytemuck::cast_vec(v).into(),
+            Initialiser::VecF32(v) => bytemuck::cast_slice(&v).to_vec().into_boxed_slice(),
+            Initialiser::VecF64(v) => bytemuck::cast_slice(&v).to_vec().into_boxed_slice(),
+            Initialiser::VecI32(v) => bytemuck::cast_slice(&v).to_vec().into_boxed_slice(),
+            Initialiser::VecI64(v) => bytemuck::cast_slice(&v).to_vec().into_boxed_slice(),
+            Initialiser::VecU64(v) => bytemuck::cast_slice(&v).to_vec().into_boxed_slice(),
             Initialiser::Constant(vec) => vec.into(),
 
             Initialiser::None => unimplemented!("None"),
