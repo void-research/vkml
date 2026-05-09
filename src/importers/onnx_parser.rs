@@ -43,8 +43,12 @@ pub fn parse_onnx_model(
             .ok()
             .map(|data| match data {
                 TensorData::Raw(bytes) => Initialiser::Bytes(bytes),
-                TensorData::Numeric(n) => Initialiser::NumericData(n),
-                TensorData::Strings(parts) => Initialiser::BytesVec(parts.into_owned()),
+                TensorData::Strings(parts) => Initialiser::VecBytes(parts),
+                TensorData::F32(v) => Initialiser::VecF32(v),
+                TensorData::F64(v) => Initialiser::VecF64(v),
+                TensorData::I32(v) => Initialiser::VecI32(v),
+                TensorData::I64(v) => Initialiser::VecI64(v),
+                TensorData::U64(v) => Initialiser::VecU64(v),
             })
             .unwrap_or(Initialiser::None);
 
