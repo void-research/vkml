@@ -2,6 +2,8 @@
 
 A greenfield Vulkan inference engine.
 
+> **Note:** 15-page academic paper pending arXiv publication. Pre-print available [here](paper/paper.pdf).
+
 ## Project Priorities
 1. Universal compute utilisation (Leverages any available hardware combination)
 2. High heterogeneous compute efficiency
