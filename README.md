@@ -2,7 +2,7 @@
 
 A greenfield Vulkan inference engine.
 
-> **Note:** 15-page academic paper pending arXiv publication. Pre-print available [here](paper/paper.pdf).
+> **Note:** 15-page academic paper pending arXiv publication. Pre-print available [here](paper/paper.pdf). Commit used is kept in branch [paper](https://github.com/void-research/vkml/tree/paper).
 
 ## Project Priorities
 1. Universal compute utilisation (Leverages any available hardware combination)
