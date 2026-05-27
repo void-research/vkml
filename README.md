@@ -8,12 +8,10 @@ A greenfield Vulkan 1.4 ONNX inference runtime implemented in Rust. Vendor-agnos
 
 ## Highlights
 
-- **1.66× faster** than ONNX Runtime (CUDA) on dispatch-dominated models (97 µs vs 161 µs median)
-- **1.46× faster** on a 266 MiB convolutional network in FP32
+- **1.62 µs/op dispatch latency** on a linear chain-add benchmark, vs ONNX Runtime's CUDA at 2.06 µs/op
 - **~10× lower runtime host memory** usage compared to ONNX Runtime
 - **Multi-vendor GPU execution** — automatic graph partitioning across NVIDIA, Intel, and AMD within a single process
-- **Lock-free graph scheduler** — event-driven, self-propagating execution achieving 1.62 µs/op dispatch latency
-- **Cooperative matrix support** — infrastructure for `VK_NV_cooperative_matrix2` enabling Tensor Core acceleration (2.59× over ONNX-RT on FP16 benchmark)
+- **Lock-free graph scheduler** — event-driven, self-propagating execution with no central coordinator
 
 ## Usage
 
