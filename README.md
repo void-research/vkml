@@ -1,4 +1,4 @@
-# VKML — Vulkan Machine Learning Runtime
+# VKML — Vulkan Machine Learning
 
 A greenfield Vulkan 1.4 ONNX inference runtime implemented in Rust. Vendor-agnostic, lock-free, and designed for heterogeneous multi-GPU execution.
 
