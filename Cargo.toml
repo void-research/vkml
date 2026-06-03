@@ -11,9 +11,11 @@ keywords = ["vulkan", "machine-learning", "gpu", "compute", "ml"]
 categories = ["science", "graphics", "hardware-support"]
 
 exclude = [
+    ".cargo/*",
+    "docs/*",
     ".gitignore",
     "tests/*",
-    "paper/",
+    "paper/*",
 ]
 
 [profile.release]
