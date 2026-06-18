@@ -5,12 +5,12 @@ use crate::{
     utils::{OnnxAutoPad, error::VKMLError},
     weight_initialiser::Initialiser,
 };
-use onnx_extractor::{AttributeValue, OnnxModel, OnnxOperation, TensorData};
+use onnx_extractor::{AttributeValue, Model, Operation, TensorData};
 use std::collections::HashMap;
 
 /// Convert ONNX model to TensorGraph
 pub fn parse_onnx_model(
-    mut onnx_model: OnnxModel,
+    onnx_model: Model,
     batch_size: i64,
 ) -> Result<(TensorGraph, Vec<Initialiser>), VKMLError> {
     let mut tensor_descs = Vec::new();
@@ -21,7 +21,8 @@ pub fn parse_onnx_model(
     let mut memory_requirements = 0;
 
     // Create tensors from ONNX model
-    for (name, onnx_tensor) in onnx_model.drain_tensors() {
+    let mut onnx_graph = onnx_model.into_graph();
+    for (name, onnx_tensor) in onnx_graph.drain_tensors() {
         let mut dims = onnx_tensor.shape().to_vec();
 
         // Replace -1 in first dimension with batch_size
@@ -58,7 +59,7 @@ pub fn parse_onnx_model(
     }
 
     // Create operations from ONNX nodes; fail fast if an op isn't supported
-    for onnx_op in onnx_model.operations() {
+    for onnx_op in onnx_graph.operations() {
         let instruction = convert_onnx_operation_to_instruction(
             onnx_op,
             &tensor_name_to_id,
@@ -69,13 +70,13 @@ pub fn parse_onnx_model(
     }
 
     // Map input/output tensor names to IDs
-    let input_tensor_ids: Vec<TensorId> = onnx_model
+    let input_tensor_ids: Vec<TensorId> = onnx_graph
         .inputs()
         .iter()
         .filter_map(|name| tensor_name_to_id.get(name).copied())
         .collect();
 
-    let output_tensor_ids: Vec<TensorId> = onnx_model
+    let output_tensor_ids: Vec<TensorId> = onnx_graph
         .outputs()
         .iter()
         .filter_map(|name| tensor_name_to_id.get(name).copied())
@@ -99,7 +100,7 @@ pub fn parse_onnx_model(
 }
 
 fn convert_onnx_operation_to_instruction(
-    onnx_op: &OnnxOperation,
+    onnx_op: &Operation,
     tensor_map: &HashMap<String, TensorId>,
     initialisers: &[Initialiser],
     tensor_descs: &[TensorDesc],
@@ -149,26 +150,26 @@ fn convert_onnx_operation_to_instruction(
             let alpha = onnx_op
                 .attributes()
                 .get("alpha")
-                .and_then(attr_to_float)
+                .and_then(|a| a.as_float())
                 .unwrap_or(1.0);
 
             let beta = onnx_op
                 .attributes()
                 .get("beta")
-                .and_then(attr_to_float)
+                .and_then(|a| a.as_float())
                 .unwrap_or(1.0);
 
             let trans_a = onnx_op
                 .attributes()
                 .get("transA")
-                .and_then(attr_to_int)
+                .and_then(|a| a.as_int())
                 .unwrap_or(0)
                 != 0;
 
             let trans_b = onnx_op
                 .attributes()
                 .get("transB")
-                .and_then(attr_to_int)
+                .and_then(|a| a.as_int())
                 .unwrap_or(0)
                 != 0;
 
@@ -192,7 +193,7 @@ fn convert_onnx_operation_to_instruction(
         }
         "Concat" => {
             let axis = if let Some(a) = onnx_op.attributes().get("axis") {
-                attr_to_int(a).ok_or_else(|| {
+                a.as_int().ok_or_else(|| {
                     VKMLError::OnnxImporter("Concat: 'axis' attribute must be an int".to_string())
                 })? as usize
             } else {
@@ -219,7 +220,10 @@ fn convert_onnx_operation_to_instruction(
                 shape_vec.push(i64::from_le_bytes(a));
             }
 
-            let allowzero = onnx_op.attributes().get("allowzero").and_then(attr_to_int);
+            let allowzero = onnx_op
+                .attributes()
+                .get("allowzero")
+                .and_then(|a| a.as_int());
             Ok(instruction::reshape(
                 input_ids[0],
                 output_ids[0],
@@ -249,14 +253,14 @@ fn convert_onnx_operation_to_instruction(
         }
         "Shape" => {
             // optional attributes 'start' and 'end'
-            let start = onnx_op.attributes().get("start").and_then(attr_to_int);
-            let end = onnx_op.attributes().get("end").and_then(attr_to_int);
+            let start = onnx_op.attributes().get("start").and_then(|a| a.as_int());
+            let end = onnx_op.attributes().get("end").and_then(|a| a.as_int());
 
             Ok(instruction::shape(input_ids[0], output_ids[0], start, end))
         }
         "Sigmoid" => Ok(instruction::sigmoid(input_ids[0], output_ids[0])),
         "Softmax" => {
-            let axis = onnx_op.attributes().get("axis").and_then(attr_to_int);
+            let axis = onnx_op.attributes().get("axis").and_then(|a| a.as_int());
             Ok(instruction::softmax(input_ids[0], output_ids[0], axis))
         }
         "Identity" => Ok(instruction::identity(input_ids[0], output_ids[0])),
@@ -285,8 +289,8 @@ fn convert_onnx_operation_to_instruction(
             let auto_pad = onnx_op
                 .attributes()
                 .get("auto_pad")
-                .and_then(attr_to_string)
-                .map(|s| match s.as_str() {
+                .and_then(|a| a.as_string())
+                .map(|s| match s {
                     "VALID" => OnnxAutoPad::Valid,
                     "SAME_UPPER" => OnnxAutoPad::SameUpper,
                     "SAME_LOWER" => OnnxAutoPad::SameLower,
@@ -296,7 +300,7 @@ fn convert_onnx_operation_to_instruction(
             let ceil_mode = onnx_op
                 .attributes()
                 .get("ceil_mode")
-                .and_then(attr_to_int)
+                .and_then(|a| a.as_int())
                 .map(|i| i != 0)
                 .unwrap_or(false);
 
@@ -315,12 +319,12 @@ fn convert_onnx_operation_to_instruction(
             let keepdims = onnx_op
                 .attributes()
                 .get("keepdims")
-                .and_then(attr_to_int)
+                .and_then(|a| a.as_int())
                 .unwrap_or(1);
             let noop_with_empty_axes = onnx_op
                 .attributes()
                 .get("noop_with_empty_axes")
-                .and_then(attr_to_int)
+                .and_then(|a| a.as_int())
                 .unwrap_or(0);
 
             // axes may be provided as second input (initializer). If present and has bytes, parse i64s
@@ -378,7 +382,7 @@ fn convert_onnx_operation_to_instruction(
             let groups = onnx_op
                 .attributes()
                 .get("groups")
-                .and_then(attr_to_int)
+                .and_then(|a| a.as_int())
                 .unwrap_or(1);
 
             if let Some(val) = onnx_op.attributes().get("kernel_shape")
@@ -400,9 +404,9 @@ fn convert_onnx_operation_to_instruction(
             // Parse auto_pad per ONNX (default NOTSET)
             let mut auto_pad: Option<OnnxAutoPad> = None;
             if let Some(val) = onnx_op.attributes().get("auto_pad")
-                && let AttributeValue::String(s) = val
+                && let Some(s) = val.as_string()
             {
-                auto_pad = match s.as_str() {
+                auto_pad = match s {
                     "VALID" => Some(OnnxAutoPad::Valid),
                     "SAME_UPPER" => Some(OnnxAutoPad::SameUpper),
                     "SAME_LOWER" => Some(OnnxAutoPad::SameLower),
@@ -456,30 +460,9 @@ fn convert_onnx_operation_to_instruction(
 
 // Helper functions to extract ONNX attribute values
 fn attr_to_vec(a: &AttributeValue) -> Option<Vec<i64>> {
-    match a {
-        AttributeValue::Ints(v) => Some(v.clone()),
-        AttributeValue::Int(i) => Some(vec![*i]),
-        _ => None,
-    }
-}
-
-fn attr_to_int(a: &AttributeValue) -> Option<i64> {
-    match a {
-        AttributeValue::Int(i) => Some(*i),
-        _ => None,
-    }
-}
-
-fn attr_to_string(a: &AttributeValue) -> Option<String> {
-    match a {
-        AttributeValue::String(s) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn attr_to_float(a: &AttributeValue) -> Option<f32> {
-    match a {
-        AttributeValue::Float(f) => Some(*f),
-        _ => None,
+    if let Some(ints) = a.as_ints() {
+        Some(ints.to_vec())
+    } else {
+        a.as_int().map(|i| vec![i])
     }
 }
