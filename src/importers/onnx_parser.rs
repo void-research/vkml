@@ -134,7 +134,7 @@ fn convert_onnx_operation_to_instruction(
         })
         .collect::<Result<Vec<TensorId>, VKMLError>>()?;
 
-    match &*onnx_op.op_type() {
+    match onnx_op.op_type() {
         "MatMul" => Ok(instruction::matmul(
             input_ids[0],
             input_ids[1],
@@ -460,9 +460,5 @@ fn convert_onnx_operation_to_instruction(
 
 // Helper functions to extract ONNX attribute values
 fn attr_to_vec(a: &AttributeValue) -> Option<Vec<i64>> {
-    if let Some(ints) = a.as_ints() {
-        Some(ints.to_vec())
-    } else {
-        a.as_int().map(|i| vec![i])
-    }
+    a.as_ints().map(|v| v.to_vec())
 }
