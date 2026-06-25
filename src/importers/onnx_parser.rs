@@ -174,11 +174,7 @@ fn convert_onnx_operation_to_instruction(
                 != 0;
 
             // C is optional - check if we have 3 inputs
-            let c_id = if input_ids.len() >= 3 {
-                Some(input_ids[2])
-            } else {
-                None
-            };
+            let c_id = input_ids.get(2).copied();
 
             Ok(instruction::gemm(
                 input_ids[0],  // A
@@ -328,8 +324,7 @@ fn convert_onnx_operation_to_instruction(
                 .unwrap_or(0);
 
             // axes may be provided as second input (initializer). If present and has bytes, parse i64s
-            let axes = if input_ids.len() >= 2 {
-                let axes_id = input_ids[1];
+            let axes = if let Some(&axes_id) = input_ids.get(1) {
                 let raw = initialisers[axes_id].as_slice();
                 if raw.len().is_multiple_of(8) {
                     let mut v = Vec::new();
