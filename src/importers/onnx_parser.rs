@@ -5,7 +5,7 @@ use crate::{
     utils::{OnnxAutoPad, error::VKMLError},
     weight_initialiser::Initialiser,
 };
-use onnx_extractor::{AttributeValue, Model, Operation, TensorData};
+use onnx_extractor::{Model, Operation, TensorData};
 use std::collections::HashMap;
 
 /// Convert ONNX model to TensorGraph
@@ -22,7 +22,7 @@ pub fn parse_onnx_model(
 
     // Create tensors from ONNX model
     let mut onnx_graph = onnx_model.into_graph();
-    for (name, onnx_tensor) in onnx_graph.drain_tensors() {
+    for (name, onnx_tensor) in onnx_graph.tensors_mut().drain() {
         let mut dims = onnx_tensor.shape().to_vec();
 
         // Replace -1 in first dimension with batch_size
@@ -59,7 +59,7 @@ pub fn parse_onnx_model(
     }
 
     // Create operations from ONNX nodes; fail fast if an op isn't supported
-    for onnx_op in onnx_graph.operations() {
+    for onnx_op in onnx_graph.operations_mut().drain(..) {
         let instruction = convert_onnx_operation_to_instruction(
             onnx_op,
             &tensor_name_to_id,
@@ -100,7 +100,7 @@ pub fn parse_onnx_model(
 }
 
 fn convert_onnx_operation_to_instruction(
-    onnx_op: &Operation,
+    mut onnx_op: Operation,
     tensor_map: &HashMap<String, TensorId>,
     initialisers: &[Initialiser],
     tensor_descs: &[TensorDesc],
@@ -200,21 +200,7 @@ fn convert_onnx_operation_to_instruction(
         }
         "Reshape" => {
             let shape_id = input_ids[1];
-            let raw = initialisers[shape_id].as_slice();
-
-            if !raw.len().is_multiple_of(8) {
-                return Err(VKMLError::OnnxImporter(format!(
-                    "Reshape: shape initializer has invalid raw byte length {}",
-                    raw.len()
-                )));
-            }
-
-            let mut shape_vec: Vec<i64> = Vec::with_capacity(raw.len() / 8);
-            for chunk in raw.chunks_exact(8) {
-                let mut a = [0u8; 8];
-                a.copy_from_slice(chunk);
-                shape_vec.push(i64::from_le_bytes(a));
-            }
+            let shape_vec = initialiser_to_i64_vec(&initialisers[shape_id], "Reshape")?;
 
             let allowzero = onnx_op
                 .attributes()
@@ -229,21 +215,7 @@ fn convert_onnx_operation_to_instruction(
         }
         "Expand" => {
             let shape_id = input_ids[1];
-            let raw = initialisers[shape_id].as_slice();
-
-            if !raw.len().is_multiple_of(8) {
-                return Err(VKMLError::OnnxImporter(format!(
-                    "Expand: shape initializer has invalid raw byte length {}",
-                    raw.len()
-                )));
-            }
-
-            let mut shape_vec: Vec<i64> = Vec::with_capacity(raw.len() / 8);
-            for chunk in raw.chunks_exact(8) {
-                let mut a = [0u8; 8];
-                a.copy_from_slice(chunk);
-                shape_vec.push(i64::from_le_bytes(a));
-            }
+            let shape_vec = initialiser_to_i64_vec(&initialisers[shape_id], "Expand")?;
 
             Ok(instruction::expand(input_ids[0], output_ids[0], shape_vec))
         }
@@ -263,29 +235,29 @@ fn convert_onnx_operation_to_instruction(
         "MaxPool" => {
             // Parse attributes similar to Conv: kernel_shape, pads, strides, dilations, auto_pad, ceil_mode
             let strides = onnx_op
-                .attributes()
-                .get("strides")
-                .and_then(attr_to_vec)
+                .attributes_mut()
+                .remove("strides")
+                .and_then(|a| a.into_ints())
                 .unwrap_or_default();
             let dilations = onnx_op
-                .attributes()
-                .get("dilations")
-                .and_then(attr_to_vec)
+                .attributes_mut()
+                .remove("dilations")
+                .and_then(|a| a.into_ints())
                 .unwrap_or_default();
             let kernel_shape = onnx_op
-                .attributes()
-                .get("kernel_shape")
-                .and_then(attr_to_vec)
+                .attributes_mut()
+                .remove("kernel_shape")
+                .and_then(|a| a.into_ints())
                 .unwrap_or_default();
             let pads = onnx_op
-                .attributes()
-                .get("pads")
-                .and_then(attr_to_vec)
+                .attributes_mut()
+                .remove("pads")
+                .and_then(|a| a.into_ints())
                 .unwrap_or_default();
             let auto_pad = onnx_op
                 .attributes()
                 .get("auto_pad")
-                .and_then(|a| a.as_string())
+                .and_then(|a| a.as_string_validated().ok())
                 .map(|s| match s {
                     "VALID" => OnnxAutoPad::Valid,
                     "SAME_UPPER" => OnnxAutoPad::SameUpper,
@@ -323,22 +295,12 @@ fn convert_onnx_operation_to_instruction(
                 .and_then(|a| a.as_int())
                 .unwrap_or(0);
 
-            // axes may be provided as second input (initializer). If present and has bytes, parse i64s
+            // axes may be provided as second input (initializer). If present, parse i64s
             let axes = if let Some(&axes_id) = input_ids.get(1) {
-                let raw = initialisers[axes_id].as_slice();
-                if raw.len().is_multiple_of(8) {
-                    let mut v = Vec::new();
-                    for chunk in raw.chunks_exact(8) {
-                        let mut a = [0u8; 8];
-                        a.copy_from_slice(chunk);
-                        v.push(i64::from_le_bytes(a));
-                    }
-                    Some(v)
-                } else {
-                    return Err(VKMLError::OnnxImporter(
-                        "ReduceMean: axes initializer has invalid length".to_string(),
-                    ));
-                }
+                Some(initialiser_to_i64_vec(
+                    &initialisers[axes_id],
+                    "ReduceMean",
+                )?)
             } else {
                 None
             };
@@ -365,14 +327,14 @@ fn convert_onnx_operation_to_instruction(
             let mut pads: Vec<i64> = Vec::new();
 
             let strides = onnx_op
-                .attributes()
-                .get("strides")
-                .and_then(attr_to_vec)
+                .attributes_mut()
+                .remove("strides")
+                .and_then(|a| a.into_ints())
                 .unwrap_or_default();
             let dilations = onnx_op
-                .attributes()
-                .get("dilations")
-                .and_then(attr_to_vec)
+                .attributes_mut()
+                .remove("dilations")
+                .and_then(|a| a.into_ints())
                 .unwrap_or_default();
             let groups = onnx_op
                 .attributes()
@@ -380,8 +342,8 @@ fn convert_onnx_operation_to_instruction(
                 .and_then(|a| a.as_int())
                 .unwrap_or(1);
 
-            if let Some(val) = onnx_op.attributes().get("kernel_shape")
-                && let Some(v) = attr_to_vec(val)
+            if let Some(val) = onnx_op.attributes_mut().remove("kernel_shape")
+                && let Some(v) = val.into_ints()
             {
                 kernel_shape = v;
             } else {
@@ -399,7 +361,7 @@ fn convert_onnx_operation_to_instruction(
             // Parse auto_pad per ONNX (default NOTSET)
             let mut auto_pad: Option<OnnxAutoPad> = None;
             if let Some(val) = onnx_op.attributes().get("auto_pad")
-                && let Some(s) = val.as_string()
+                && let Some(s) = val.as_string_validated().ok()
             {
                 auto_pad = match s {
                     "VALID" => Some(OnnxAutoPad::Valid),
@@ -412,13 +374,13 @@ fn convert_onnx_operation_to_instruction(
             let auto_pad_val = auto_pad.unwrap_or(OnnxAutoPad::NotSet);
 
             // pads: only allowed when auto_pad == NOTSET
-            if let Some(val) = onnx_op.attributes().get("pads") {
+            if let Some(val) = onnx_op.attributes_mut().remove("pads") {
                 if auto_pad_val != OnnxAutoPad::NotSet {
                     return Err(VKMLError::OnnxImporter(
                         "Conv: 'pads' and 'auto_pad' cannot be used together".to_string(),
                     ));
                 }
-                if let Some(pv) = attr_to_vec(val) {
+                if let Some(pv) = val.into_ints() {
                     if pv.iter().any(|x| *x < 0) {
                         return Err(VKMLError::OnnxImporter(
                             "Pads must be non-negative for Conv operation".to_string(),
@@ -453,7 +415,16 @@ fn convert_onnx_operation_to_instruction(
     }
 }
 
-// Helper functions to extract ONNX attribute values
-fn attr_to_vec(a: &AttributeValue) -> Option<Vec<i64>> {
-    a.as_ints().map(|v| v.to_vec())
+fn initialiser_to_i64_vec(init: &Initialiser, op_name: &str) -> Result<Vec<i64>, VKMLError> {
+    let raw = init.as_slice();
+    if !raw.len().is_multiple_of(8) {
+        return Err(VKMLError::OnnxImporter(format!(
+            "{}: initializer raw byte length must be multiple of 8",
+            op_name
+        )));
+    }
+    Ok(raw
+        .chunks_exact(8)
+        .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+        .collect())
 }
