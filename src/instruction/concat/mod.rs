@@ -3,7 +3,7 @@ mod f32_cpu;
 use crate::{
     ComputeManager, VKMLError,
     gpu::vk_gpu::Gpu,
-    instruction::{Instruction, concat::f32_cpu::f32_cpu},
+    instruction::{GPUOperation, Instruction, concat::f32_cpu::f32_cpu},
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -45,11 +45,16 @@ impl Instruction for ConcatInstruction {
         }
     }
 
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
     fn record_into_command_buffer(
         &self,
         _gpu: &Gpu,
         _command_buffer: vk::CommandBuffer,
         _cm: &ComputeManager,
+        _op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
         // Complex operation that would require custom shaders
         Err(VKMLError::Instruction(

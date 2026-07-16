@@ -7,6 +7,7 @@ use crate::instruction::gpu_operations::GPUOperation;
 use crate::instruction::maxpool::push_constants::{
     MaxPool1DPushConstants, MaxPool2DPushConstants, MaxPool3DPushConstants,
 };
+use crate::utils::dtype::slang_iarithmetic_types;
 use crate::utils::{OnnxAutoPad, as_bytes, calc_begin_and_end_pads};
 use crate::{
     gpu::vk_gpu::Gpu,
@@ -78,12 +79,66 @@ impl Instruction for MaxPoolInstruction {
         }
     }
 
+    fn gpu_supported_types(&self) -> &[DataType] {
+        slang_iarithmetic_types()
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
+        let src_tensor = cm.tensor_read(self.src);
+        let dst_tensor = cm.tensor_read(self.dst);
+
+        let src_dtype = src_tensor.desc().data_type();
+        let dst_dtype = dst_tensor.desc().data_type();
+
+        if src_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
+                src_dtype, dst_dtype
+            )));
+        }
+
+        let src_desc = src_tensor.desc();
+        let spatial_rank = if src_desc.ndim() >= 2 {
+            src_desc.ndim() - 2
+        } else {
+            0
+        };
+        let gpu_op = match spatial_rank {
+            0 | 1 => GPUOperation::MaxPool_1D,
+            2 => GPUOperation::MaxPool_2D,
+            3 => GPUOperation::MaxPool_3D,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "GPU MaxPool unsupported spatial rank {}",
+                    spatial_rank
+                )));
+            }
+        };
+        Ok(Some(gpu_op))
+    }
+
     fn record_into_command_buffer(
         &self,
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
+        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::MaxPool_1D) => GPUOperation::MaxPool_1D,
+            Some(GPUOperation::MaxPool_2D) => GPUOperation::MaxPool_2D,
+            Some(GPUOperation::MaxPool_3D) => GPUOperation::MaxPool_3D,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for MaxPool",
+                    op
+                )));
+            }
+        };
         // GPU implementation: bind src(0) and dst(2), push constants and dispatch.
         let src_tensor = cm.tensor_read(self.src);
         let dst_tensor = cm.tensor_read(self.dst);
@@ -136,19 +191,10 @@ impl Instruction for MaxPoolInstruction {
                 let total: u64 = (src_dims[0] as u64) * (src_dims[1] as u64) * (output_len as u64);
                 let local_size = gpu.optimal_workgroup_size_1d(total);
 
-                let src_dtype = src_desc.data_type();
                 let dst_dtype = dst_desc.data_type();
-                if src_dtype != dst_dtype {
-                    return Err(VKMLError::Instruction(format!(
-                        "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
-                        src_dtype, dst_dtype
-                    )));
-                }
 
-                let gpu_op = GPUOperation::MaxPool_1D;
-
-                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
-                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
+                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
+                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
 
                 gpu.dispatch(command_buffer, local_size, [total, 1, 1]);
             }
@@ -183,19 +229,10 @@ impl Instruction for MaxPoolInstruction {
 
                 let local_size = gpu.optimal_workgroup_size_2d(out_h, out_w);
 
-                let src_dtype = src_desc.data_type();
                 let dst_dtype = dst_desc.data_type();
-                if src_dtype != dst_dtype {
-                    return Err(VKMLError::Instruction(format!(
-                        "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
-                        src_dtype, dst_dtype
-                    )));
-                }
 
-                let gpu_op = GPUOperation::MaxPool_2D;
-
-                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
-                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
+                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
+                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
 
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, batch_nc]);
             }
@@ -237,23 +274,14 @@ impl Instruction for MaxPoolInstruction {
 
                 let local_size = gpu.optimal_workgroup_size_3d(out_w, out_h, out_d);
 
-                let src_dtype = src_desc.data_type();
                 let dst_dtype = dst_desc.data_type();
-                if src_dtype != dst_dtype {
-                    return Err(VKMLError::Instruction(format!(
-                        "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
-                        src_dtype, dst_dtype
-                    )));
-                }
 
-                let gpu_op = GPUOperation::MaxPool_3D;
-
-                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
-                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
+                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
+                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
 
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, total_z]);
             }
-            _ => panic!("Unsupported spatial rank {} for GPU MaxPool", spatial_rank),
+            _ => unreachable!(),
         }
 
         Ok(())

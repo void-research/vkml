@@ -5,6 +5,7 @@ use crate::ComputeManager;
 use crate::VKMLError;
 use crate::instruction::softmax::push_constants::SoftmaxPushConstants;
 use crate::utils::as_bytes;
+
 use crate::{
     gpu::vk_gpu::Gpu,
     instruction::{Instruction, gpu_operations::GPUOperation, softmax::f32_f32_cpu::f32_f32_cpu},
@@ -60,12 +61,67 @@ impl Instruction for SoftmaxInstruction {
         }
     }
 
+    fn gpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float, DataType::Float16]
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
+        let src_tensor = cm.tensor_read(self.src);
+        let dst_tensor = cm.tensor_read(self.dst);
+        let src_dtype = src_tensor.desc().data_type();
+        let dst_dtype = dst_tensor.desc().data_type();
+
+        if src_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Softmax unimplemented for DataType src:{:?}, dst:{:?}",
+                src_dtype, dst_dtype
+            )));
+        }
+
+        let dims = src_tensor.desc().dims();
+        let dim = self.resolve_axis(dims.len());
+        if dim != dims.len() - 1 {
+            return Err(VKMLError::Instruction(format!(
+                "Only softmax on the last dimension is currently implemented, requested dimension: {}",
+                dim
+            )));
+        }
+
+        let op_name = match dst_dtype {
+            DataType::Float => GPUOperation::Softmax_FP32,
+            DataType::Float16 => GPUOperation::Softmax_FP16,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "GPU Softmax unsupported for DataType {:?}",
+                    dst_dtype
+                )));
+            }
+        };
+        Ok(Some(op_name))
+    }
+
     fn record_into_command_buffer(
         &self,
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
+        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::Softmax_FP32) => GPUOperation::Softmax_FP32,
+            Some(GPUOperation::Softmax_FP16) => GPUOperation::Softmax_FP16,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for Softmax",
+                    op
+                )));
+            }
+        };
+
         let src_tensor = cm.tensor_read(self.src);
         let src_mem = src_tensor.get_gpu_memory_or_panic();
         let dst_tensor = cm.tensor_read(self.dst);
@@ -73,14 +129,6 @@ impl Instruction for SoftmaxInstruction {
 
         let dims = src_tensor.desc().dims();
         let dim = self.resolve_axis(dims.len());
-
-        // Currently we only support softmax on the last dimension
-        assert_eq!(
-            dim,
-            dims.len() - 1,
-            "Only softmax on the last dimension is currently implemented, requested dimension: {}",
-            dim
-        );
 
         let feature_size = dims[dim] as usize;
         let batch_size = src_tensor.desc().num_elements() / feature_size;
@@ -92,29 +140,10 @@ impl Instruction for SoftmaxInstruction {
         };
 
         let pc_bytes = as_bytes(&push_constants);
-
-        // Choose operation based on data type
-        let src_dtype = src_tensor.desc().data_type();
         let dst_dtype = dst_tensor.desc().data_type();
 
-        if src_dtype != dst_dtype {
-            return Err(VKMLError::Instruction(format!(
-                "GPU Softmax unimplemented for DataType src:{:?}, dst:{:?}",
-                src_dtype, dst_dtype
-            )));
-        }
-
         // Standard path
-        let gpu_op = match dst_dtype {
-            DataType::Float => GPUOperation::Softmax_FP32,
-            DataType::Float16 => GPUOperation::Softmax_FP16,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU Softmax unsupported for DataType {:?}",
-                    dst_dtype
-                )));
-            }
-        };
+        let gpu_op = op_name;
         let local_size = [256, 1, 1];
 
         gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);

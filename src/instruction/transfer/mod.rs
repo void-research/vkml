@@ -1,4 +1,7 @@
-use crate::{ComputeManager, instruction::Instruction, tensor::DeviceId, tensor_graph::TensorId};
+use crate::{
+    ComputeManager, DataType, instruction::Instruction, tensor::DeviceId, tensor_graph::TensorId,
+    utils::dtype::onnx_datatype_all_valid,
+};
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
 pub struct TransferToDeviceInstruction {
@@ -19,6 +22,13 @@ impl Debug for TransferToDeviceInstruction {
 }
 
 impl Instruction for TransferToDeviceInstruction {
+    fn gpu_supported_types(&self) -> &[DataType] {
+        &[]
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        onnx_datatype_all_valid()
+    }
     fn get_input_tensor_ids(&self) -> Vec<TensorId> {
         vec![self.src]
     }

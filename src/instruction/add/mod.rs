@@ -5,6 +5,7 @@ use crate::ComputeManager;
 use crate::VKMLError;
 use crate::instruction::add::push_constants::AddPushConstants;
 use crate::utils::as_bytes;
+use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
     gpu::vk_gpu::Gpu,
     instruction::{
@@ -53,12 +54,96 @@ impl Instruction for AddInstruction {
         }
     }
 
+    fn gpu_supported_types(&self) -> &[DataType] {
+        slang_iarithmetic_types()
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
+        let src1_tensor = cm.tensor_read(self.src1);
+        let src2_tensor = cm.tensor_read(self.src2);
+        let dst_tensor = cm.tensor_read(self.dst);
+
+        let src1_desc = src1_tensor.desc();
+        let src2_desc = src2_tensor.desc();
+        let dst_desc = dst_tensor.desc();
+
+        // Datatype verification
+        let src1_dtype = src1_desc.data_type();
+        let src2_dtype = src2_desc.data_type();
+        let dst_dtype = dst_desc.data_type();
+        if src1_dtype != src2_dtype || src1_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Add unimplemented for mixed DataType src1:{:?}, src2:{:?}, dst:{:?}",
+                src1_dtype, src2_dtype, dst_dtype
+            )));
+        }
+
+        let src1_dims_usize = src1_desc.dims();
+        let src2_dims_usize = src2_desc.dims();
+        let dst_dims_usize = dst_desc.dims();
+
+        let rank = dst_dims_usize.len() as u32;
+        if rank > 8 {
+            return Err(VKMLError::Instruction(format!(
+                "Add: tensor rank {} exceeds maximum supported rank of 8",
+                rank
+            )));
+        }
+
+        let broadcast_dims = TensorDesc::broadcast_shape(src1_dims_usize, src2_dims_usize)
+            .ok_or_else(|| {
+                VKMLError::Instruction(format!(
+                    "GPU Add: Can't broadcast {:?} vs {:?}",
+                    src1_dims_usize, src2_dims_usize
+                ))
+            })?;
+
+        if broadcast_dims != dst_dims_usize {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Add: Broadcast shape {:?} != dst shape {:?}",
+                broadcast_dims, dst_dims_usize
+            )));
+        }
+
+        let strides_a_usize = TensorDesc::broadcast_strides(src1_dims_usize, dst_dims_usize);
+        let strides_b_usize = TensorDesc::broadcast_strides(src2_dims_usize, dst_dims_usize);
+
+        let use_nostride = dst_dims_usize.len() == 1
+            && strides_a_usize.len() == 1
+            && strides_b_usize.len() == 1
+            && strides_a_usize[0] == 0
+            && strides_b_usize[0] == 0;
+
+        let op_name = if use_nostride {
+            GPUOperation::Addition_NoStride
+        } else {
+            GPUOperation::Addition
+        };
+        Ok(Some(op_name))
+    }
+
     fn record_into_command_buffer(
         &self,
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
+        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::Addition) => GPUOperation::Addition,
+            Some(GPUOperation::Addition_NoStride) => GPUOperation::Addition_NoStride,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for Add",
+                    op
+                )));
+            }
+        };
+
         let src1_tensor = cm.tensor_read(self.src1);
         let src1_mem = src1_tensor.get_gpu_memory_or_panic();
         let src2_tensor = cm.tensor_read(self.src2);
@@ -66,7 +151,6 @@ impl Instruction for AddInstruction {
         let dst_tensor = cm.tensor_read(self.dst);
         let dst_mem = dst_tensor.get_gpu_memory_or_panic();
 
-        // Get tensor descriptions for calculating broadcast shapes and strides
         let src1_desc = src1_tensor.desc();
         let src2_desc = src2_tensor.desc();
         let dst_desc = dst_tensor.desc();
@@ -76,31 +160,11 @@ impl Instruction for AddInstruction {
         let dst_dims_usize = dst_desc.dims();
 
         let rank = dst_dims_usize.len() as u32;
-        assert!(
-            rank <= 8,
-            "Add: tensor rank {} exceeds maximum supported rank of 8",
-            rank
-        );
 
         let mut dims_arr = [0u32; 8];
         for (i, &d) in dst_dims_usize.iter().enumerate().take(8) {
             dims_arr[i] = d as u32;
         }
-
-        // Calculate broadcast shape and strides
-        let broadcast_dims = TensorDesc::broadcast_shape(src1_dims_usize, src2_dims_usize)
-            .unwrap_or_else(|| {
-                panic!(
-                    "GPU Add: Can't broadcast {:?} vs {:?}",
-                    src1_dims_usize, src2_dims_usize
-                )
-            });
-
-        assert_eq!(
-            broadcast_dims, dst_dims_usize,
-            "GPU Add: Broadcast shape {:?} != dst shape {:?}",
-            broadcast_dims, dst_dims_usize
-        );
 
         let strides_a_usize = TensorDesc::broadcast_strides(src1_dims_usize, dst_dims_usize);
         let strides_b_usize = TensorDesc::broadcast_strides(src2_dims_usize, dst_dims_usize);
@@ -119,7 +183,7 @@ impl Instruction for AddInstruction {
 
         let push_const_values = AddPushConstants {
             rank,
-            pad: 0, // Padding value, 0 is fine
+            pad: 0,
             total: total_elements as u32,
             dims: dims_arr,
             strides_a: strides_a_arr,
@@ -127,33 +191,10 @@ impl Instruction for AddInstruction {
         };
 
         let push_constant_bytes = as_bytes(&push_const_values);
-
-        let use_nostride = rank == 1
-            && strides_a_usize.len() == 1
-            && strides_b_usize.len() == 1
-            && strides_a_usize[0] == 0
-            && strides_b_usize[0] == 0;
-
-        let src1_dtype = src1_desc.data_type();
-        let src2_dtype = src2_desc.data_type();
         let dst_dtype = dst_desc.data_type();
-
-        if src1_dtype != src2_dtype || src1_dtype != dst_dtype {
-            return Err(VKMLError::Instruction(format!(
-                "GPU Add unimplemented for mixed DataType src1:{:?}, src2:{:?}, dst:{:?}",
-                src1_dtype, src2_dtype, dst_dtype
-            )));
-        }
-
-        let op_name = if use_nostride {
-            GPUOperation::Addition_NoStride
-        } else {
-            GPUOperation::Addition
-        };
-
         let local_size = gpu.optimal_workgroup_size_1d(total_elements);
 
-        if use_nostride {
+        if op_name == GPUOperation::Addition_NoStride {
             gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
             gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
 

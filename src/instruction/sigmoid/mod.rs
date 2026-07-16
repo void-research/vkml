@@ -1,6 +1,7 @@
 mod f32_f32_cpu;
 
 use crate::VKMLError;
+
 use crate::{
     ComputeManager,
     gpu::vk_gpu::Gpu,
@@ -8,6 +9,7 @@ use crate::{
     tensor::TensorDesc,
     tensor_graph::TensorId,
 };
+
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
@@ -42,21 +44,17 @@ impl Instruction for SigmoidInstruction {
         }
     }
 
-    fn record_into_command_buffer(
-        &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
+    fn gpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float, DataType::Float16]
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
         let src_tensor = cm.tensor_read(self.src);
-        let src_mem = src_tensor.get_gpu_memory_or_panic();
         let dst_tensor = cm.tensor_read(self.dst);
-        let dst_mem = dst_tensor.get_gpu_memory_or_panic();
-
-        // Prepare CPU-side values
-        let num_elements = dst_tensor.desc().num_elements();
-
-        // Choose operation based on data type
         let src_dtype = src_tensor.desc().data_type();
         let dst_dtype = dst_tensor.desc().data_type();
 
@@ -77,6 +75,35 @@ impl Instruction for SigmoidInstruction {
                 )));
             }
         };
+        Ok(Some(op_name))
+    }
+
+    fn record_into_command_buffer(
+        &self,
+        gpu: &Gpu,
+        command_buffer: vk::CommandBuffer,
+        cm: &ComputeManager,
+        op: Option<GPUOperation>,
+    ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::Sigmoid_FP32) => GPUOperation::Sigmoid_FP32,
+            Some(GPUOperation::Sigmoid_FP16) => GPUOperation::Sigmoid_FP16,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for Sigmoid",
+                    op
+                )));
+            }
+        };
+
+        let src_tensor = cm.tensor_read(self.src);
+        let src_mem = src_tensor.get_gpu_memory_or_panic();
+        let dst_tensor = cm.tensor_read(self.dst);
+        let dst_mem = dst_tensor.get_gpu_memory_or_panic();
+
+        // Prepare CPU-side values
+        let num_elements = dst_tensor.desc().num_elements();
+        let dst_dtype = dst_tensor.desc().data_type();
 
         let local_size = [256, 1, 1];
 

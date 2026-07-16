@@ -48,47 +48,73 @@ impl Instruction for ShapeInstruction {
         }
     }
 
+    fn gpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Int64]
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Int64]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
+        let dst_t = cm.tensor_read(self.dst);
+        let dst_dtype = dst_t.desc().data_type();
+        if dst_dtype != DataType::Int64 {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Shape unimplemented for dst DataType: {:?}, expected Int64",
+                dst_dtype
+            )));
+        }
+        Ok(Some(GPUOperation::Shape_Write))
+    }
+
     fn record_into_command_buffer(
         &self,
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
+        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::Shape_Write) => GPUOperation::Shape_Write,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for Shape",
+                    op
+                )));
+            }
+        };
+
         // Compute shape bytes on host, then upload to GPU via a host-visible staging buffer
         let src_desc = cm.tensor_read(self.src).desc().clone();
         let rank = src_desc.ndim() as i64;
 
-        let mut start = self.start.unwrap_or(0);
-        let mut end = self.end.unwrap_or(rank);
-
-        if start < 0 {
-            start += rank;
-        }
-        if end < 0 {
-            end += rank;
-        }
-
-        if start < 0 {
-            start = 0;
-        }
-        if start > rank {
-            start = rank;
-        }
-
-        if end < 0 {
-            end = 0;
-        }
-        if end > rank {
-            end = rank;
-        }
-
-        let slice_len = if start >= end {
-            0usize
-        } else {
-            (end - start) as usize
+        let start = match self.start {
+            Some(s) => {
+                if s < 0 {
+                    s + rank
+                } else {
+                    s
+                }
+            }
+            None => 0,
         };
 
-        // Prepare push constants: split i64 dims into low/high 32-bit words
+        let end = match self.end {
+            Some(e) => {
+                if e < 0 {
+                    e + rank
+                } else {
+                    e
+                }
+            }
+            None => rank,
+        };
+
+        let start = start.clamp(0, rank);
+        let end = end.clamp(start, rank);
+        let slice_len = end - start;
+
         let mut dims_lo = [0u32; 8];
         let mut dims_hi = [0u32; 8];
         for (i, &d) in src_desc.dims().iter().enumerate().take(8) {
@@ -108,17 +134,9 @@ impl Instruction for ShapeInstruction {
         // For GPU path do not perform CPU writes; read the dst tensor and ensure it's GPU-backed
         let dst_t = cm.tensor_read(self.dst);
         let dst_mem = dst_t.get_gpu_memory_or_panic();
-
-        // Respect DataType: Shape always writes int64 outputs on GPU
         let dst_dtype = dst_t.desc().data_type();
-        if dst_dtype != DataType::Int64 {
-            return Err(VKMLError::Instruction(format!(
-                "GPU Shape unimplemented for dst DataType: {:?}, expected Int64",
-                dst_dtype
-            )));
-        }
 
-        let gpu_op = GPUOperation::Shape_Write;
+        let gpu_op = op_name;
         let local_size = gpu.optimal_workgroup_size_1d(slice_len as u64);
 
         gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);

@@ -44,7 +44,7 @@ pub use sub::SubInstruction;
 pub use transfer::TransferToDeviceInstruction;
 
 use crate::{
-    ComputeManager,
+    ComputeManager, DataType,
     gpu::vk_gpu::Gpu,
     tensor::DeviceId,
     tensor_graph::TensorId,
@@ -63,12 +63,28 @@ pub trait Instruction: Debug {
     // Remap tensor IDs (used during graph construction)
     fn remap_tensor_ids(&mut self, new_inputs: &[TensorId], new_outputs: &[TensorId]);
 
+    // Return the list of datatypes supported on GPU
+    fn gpu_supported_types(&self) -> &[DataType] {
+        &[]
+    }
+
+    // Return the list of datatypes supported on CPU
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[]
+    }
+
+    // Pick the specific GPUOperation to execute
+    fn pick_gpu_operation(&self, _cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
+        Ok(None)
+    }
+
     // Record this instruction into an already begun command buffer
     fn record_into_command_buffer(
         &self,
         _gpu: &Gpu,
         _command_buffer: vk::CommandBuffer,
         _cm: &ComputeManager,
+        _op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
         Err(VKMLError::Instruction(format!(
             "GPU execution not implemented for {:?}",

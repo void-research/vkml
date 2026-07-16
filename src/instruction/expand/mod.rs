@@ -6,6 +6,7 @@ use crate::VKMLError;
 use crate::instruction::expand::f32_f32_cpu::f32_f32_cpu;
 use crate::instruction::expand::push_constants::ExpandPushConstants;
 use crate::utils::as_bytes;
+use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
     gpu::vk_gpu::Gpu,
     instruction::{Instruction, gpu_operations::GPUOperation},
@@ -51,18 +52,87 @@ impl Instruction for ExpandInstruction {
         }
     }
 
+    fn gpu_supported_types(&self) -> &[DataType] {
+        slang_iarithmetic_types()
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
+        let src_tensor = cm.tensor_read(self.src);
+        let dst_tensor = cm.tensor_read(self.dst);
+
+        let src_desc = src_tensor.desc();
+        let dst_desc = dst_tensor.desc();
+
+        // Datatype verification
+        let src_dtype = src_desc.data_type();
+        let dst_dtype = dst_desc.data_type();
+        if src_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Expand unimplemented for DataType src:{:?}, dst:{:?}",
+                src_dtype, dst_dtype
+            )));
+        }
+
+        let src_dims = src_desc.dims();
+        let dst_dims = dst_desc.dims();
+
+        let rank = dst_dims.len() as u32;
+        if rank > 8 {
+            return Err(VKMLError::Instruction(format!(
+                "Expand: tensor rank {} exceeds maximum supported rank of 8",
+                rank
+            )));
+        }
+
+        // Verify broadcast compatibility
+        let src_rank = src_dims.len();
+        let dst_rank = dst_dims.len();
+        let mut padded_src_dims = vec![1; dst_rank];
+        let offset = dst_rank.saturating_sub(src_rank);
+        for (i, &dim) in src_dims.iter().enumerate() {
+            padded_src_dims[offset + i] = dim;
+        }
+
+        for i in 0..dst_rank {
+            let src_dim = padded_src_dims[i];
+            let dst_dim = dst_dims[i];
+            if src_dim != dst_dim && src_dim != 1 {
+                return Err(VKMLError::Instruction(format!(
+                    "GPU Expand: dimension mismatch: src_dim={}, dst_dim={}",
+                    src_dim, dst_dim
+                )));
+            }
+        }
+
+        Ok(Some(GPUOperation::Expand))
+    }
+
     fn record_into_command_buffer(
         &self,
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
+        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::Expand) => GPUOperation::Expand,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for Expand",
+                    op
+                )));
+            }
+        };
+
         let src_tensor = cm.tensor_read(self.src);
         let src_mem = src_tensor.get_gpu_memory_or_panic();
         let dst_tensor = cm.tensor_read(self.dst);
         let dst_mem = dst_tensor.get_gpu_memory_or_panic();
 
-        // Get tensor descriptions
         let src_desc = src_tensor.desc();
         let dst_desc = dst_tensor.desc();
 
@@ -70,18 +140,12 @@ impl Instruction for ExpandInstruction {
         let dst_dims_usize = dst_desc.dims();
 
         let rank = dst_dims_usize.len() as u32;
-        assert!(
-            rank <= 8,
-            "Expand: tensor rank {} exceeds maximum supported rank of 8",
-            rank
-        );
 
         let mut dims_arr = [0u32; 8];
         for (i, &d) in dst_dims_usize.iter().enumerate().take(8) {
             dims_arr[i] = d as u32;
         }
 
-        // Calculate broadcast strides for src tensor
         let strides_src_usize = TensorDesc::broadcast_strides(src_dims_usize, dst_dims_usize);
 
         let mut strides_src_arr = [0u32; 8];
@@ -100,26 +164,13 @@ impl Instruction for ExpandInstruction {
         };
 
         let push_constant_bytes = as_bytes(&push_const_values);
-
-        // Choose operation based on tensor DataType
-        let src_dtype = src_desc.data_type();
         let dst_dtype = dst_desc.data_type();
-        if src_dtype != dst_dtype {
-            return Err(VKMLError::Instruction(format!(
-                "GPU Expand unimplemented for DataType src:{:?}, dst:{:?}",
-                src_dtype, dst_dtype
-            )));
-        }
 
-        let gpu_op = GPUOperation::Expand;
-
-        // Optimal local workgroup size for 1D element-wise op
         let local_size = gpu.optimal_workgroup_size_1d(total_elements);
 
-        // Bind pipeline, storage buffers, push constants
-        gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
+        gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-        gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
+        gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
 
         let num_elements: u64 = dst_dims_usize.iter().map(|d| *d as u64).product();
         gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);

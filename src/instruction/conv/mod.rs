@@ -8,6 +8,7 @@ use crate::instruction::conv::push_constants::{
 };
 use crate::tensor::TensorDesc;
 use crate::utils::bytes::as_bytes;
+use crate::utils::dtype::slang_iarithmetic_types;
 use crate::utils::{OnnxAutoPad, calc_begin_and_end_pads};
 use crate::{
     gpu::vk_gpu::Gpu,
@@ -98,28 +99,93 @@ impl Instruction for ConvInstruction {
         }
     }
 
+    fn gpu_supported_types(&self) -> &[DataType] {
+        slang_iarithmetic_types()
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
+        let src_tensor = cm.tensor_read(self.src);
+        let weights_tensor = cm.tensor_read(self.weights);
+        let dst_tensor = cm.tensor_read(self.dst);
+        let bias_tensor_opt = self.bias.map(|bid| cm.tensor_read(bid));
+
+        let src_dtype = src_tensor.desc().data_type();
+        let weight_dtype = weights_tensor.desc().data_type();
+        let bias_dtype_opt = bias_tensor_opt.as_ref().map(|t| t.desc().data_type());
+        let dst_dtype = dst_tensor.desc().data_type();
+
+        if src_dtype != weight_dtype
+            || src_dtype != dst_dtype
+            || (bias_dtype_opt.is_some() && bias_dtype_opt != Some(src_dtype))
+        {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Conv unimplemented for mixed DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
+                src_dtype,
+                weight_dtype,
+                bias_dtype_opt
+                    .map(|dt| format!("{:?}", dt))
+                    .unwrap_or_else(|| "None".to_string()),
+                dst_dtype
+            )));
+        }
+
+        let src_desc = src_tensor.desc();
+        let c_val = src_desc.dims()[1];
+        let dst_desc = dst_tensor.desc();
+        let m_val = dst_desc.dims()[1];
+        if self.group < 1 || c_val % self.group != 0 || m_val % self.group != 0 {
+            return Err(VKMLError::Instruction(format!(
+                "invalid group configuration: group={}, C={}, M={}",
+                self.group, c_val, m_val
+            )));
+        }
+
+        let spatial_rank = if src_desc.ndim() >= 2 {
+            src_desc.ndim() - 2
+        } else {
+            0
+        };
+        let gpu_op = match spatial_rank {
+            0 | 1 => GPUOperation::Conv_1D,
+            2 => GPUOperation::Conv_2D,
+            3 => GPUOperation::Conv_3D,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "GPU Conv unsupported spatial rank {}",
+                    spatial_rank
+                )));
+            }
+        };
+        Ok(Some(gpu_op))
+    }
+
     fn record_into_command_buffer(
         &self,
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
+        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::Conv_1D) => GPUOperation::Conv_1D,
+            Some(GPUOperation::Conv_2D) => GPUOperation::Conv_2D,
+            Some(GPUOperation::Conv_3D) => GPUOperation::Conv_3D,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for Conv",
+                    op
+                )));
+            }
+        };
+
         // Acquire read guards for tensors so we can access descriptors and GPU memory
         let src_tensor = cm.tensor_read(self.src);
         let weights_tensor = cm.tensor_read(self.weights);
         let dst_tensor = cm.tensor_read(self.dst);
-
-        // Basic sanity checks for group before doing GPU work
-        let src_desc_tmp = src_tensor.desc();
-        let c_val = src_desc_tmp.dims()[1];
-        let dst_desc_tmp = dst_tensor.desc();
-        let m_val = dst_desc_tmp.dims()[1];
-        if self.group < 1 || c_val % self.group != 0 || m_val % self.group != 0 {
-            panic!(
-                "ConvInstruction.record_into_command_buffer: invalid group configuration: group={}, C={}, M={}",
-                self.group, c_val, m_val
-            );
-        }
 
         let src_mem = src_tensor.get_gpu_memory_or_panic();
         let weights_mem = weights_tensor.get_gpu_memory_or_panic();
@@ -132,15 +198,14 @@ impl Instruction for ConvInstruction {
             .as_ref()
             .map(|t| t.get_gpu_memory_or_panic());
 
-        // Decide which shader/pipeline to use based on spatial rank and prepare push constants
         let src_desc = src_tensor.desc();
+        let pb = self.compute_pads(src_desc);
+
         let spatial_rank = if src_desc.ndim() >= 2 {
             src_desc.ndim() - 2
         } else {
             0
         };
-
-        let pb = self.compute_pads(src_desc);
 
         match spatial_rank {
             0 | 1 => {
@@ -180,34 +245,15 @@ impl Instruction for ConvInstruction {
                 let total: u64 = (src_dims[0] as u64) * (dst_dims[1] as u64) * (output_len as u64);
                 let local_size = gpu.optimal_workgroup_size_1d(total);
 
-                let src_dtype = src_desc.data_type();
-                let weight_dtype = weights_tensor.desc().data_type();
-                let bias_dtype_opt = bias_tensor_opt.as_ref().map(|t| t.desc().data_type());
                 let dst_dtype = dst_desc.data_type();
-                if src_dtype != weight_dtype
-                    || src_dtype != dst_dtype
-                    || (bias_dtype_opt.is_some() && bias_dtype_opt != Some(src_dtype))
-                {
-                    return Err(VKMLError::Instruction(format!(
-                        "GPU Conv unimplemented for mixed DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
-                        src_dtype,
-                        weight_dtype,
-                        bias_dtype_opt
-                            .map(|dt| format!("{:?}", dt))
-                            .unwrap_or_else(|| "None".to_string()),
-                        dst_dtype
-                    )));
-                }
 
-                let gpu_op = GPUOperation::Conv_1D;
-
-                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
+                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
                 gpu.bind_storage_buffers_optional(
                     command_buffer,
                     &[Some(src_mem), Some(weights_mem), Some(dst_mem), bias_mem],
                 );
 
-                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
+                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
 
                 // dispatch: provide total work counts per-dimension; Gpu::dispatch will
                 // compute the needed number of workgroups as ceil(work/local_size)
@@ -248,34 +294,15 @@ impl Instruction for ConvInstruction {
 
                 let local_size = gpu.optimal_workgroup_size_2d(out_h, out_w);
 
-                let src_dtype = src_desc.data_type();
-                let weight_dtype = weights_tensor.desc().data_type();
-                let bias_dtype_opt = bias_tensor_opt.as_ref().map(|t| t.desc().data_type());
                 let dst_dtype = dst_desc.data_type();
-                if src_dtype != weight_dtype
-                    || src_dtype != dst_dtype
-                    || (bias_dtype_opt.is_some() && bias_dtype_opt != Some(src_dtype))
-                {
-                    return Err(VKMLError::Instruction(format!(
-                        "GPU Conv unimplemented for mixed DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
-                        src_dtype,
-                        weight_dtype,
-                        bias_dtype_opt
-                            .map(|dt| format!("{:?}", dt))
-                            .unwrap_or_else(|| "None".to_string()),
-                        dst_dtype
-                    )));
-                }
 
-                let gpu_op = GPUOperation::Conv_2D;
-
-                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
+                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
                 gpu.bind_storage_buffers_optional(
                     command_buffer,
                     &[Some(src_mem), Some(weights_mem), Some(dst_mem), bias_mem],
                 );
 
-                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
+                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
 
                 // dispatch using total work extents (width, height, batch)
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, batch_nm]);
@@ -308,15 +335,7 @@ impl Instruction for ConvInstruction {
                     pad_d: pb.first().copied().unwrap_or(0) as u32,
                     pad_h: pb.get(1).copied().unwrap_or(0) as u32,
                     pad_w: pb.get(2).copied().unwrap_or(0) as u32,
-                    group: {
-                        if self.group < 1 {
-                            panic!(
-                                "ConvInstruction.record_into_command_buffer: group must be >= 1, got {}",
-                                self.group
-                            );
-                        }
-                        self.group as u32
-                    },
+                    group: self.group as u32,
                     has_bias: if self.bias.is_some() { 1 } else { 0 },
                 };
 
@@ -332,39 +351,20 @@ impl Instruction for ConvInstruction {
                 // pick a cubic local workgroup size based on spatial dims
                 let local_size = gpu.optimal_workgroup_size_3d(out_w, out_h, out_d);
 
-                let src_dtype = src_desc.data_type();
-                let weight_dtype = weights_tensor.desc().data_type();
-                let bias_dtype_opt = bias_tensor_opt.as_ref().map(|t| t.desc().data_type());
                 let dst_dtype = dst_desc.data_type();
-                if src_dtype != weight_dtype
-                    || src_dtype != dst_dtype
-                    || (bias_dtype_opt.is_some() && bias_dtype_opt != Some(src_dtype))
-                {
-                    return Err(VKMLError::Instruction(format!(
-                        "GPU Conv unimplemented for mixed DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
-                        src_dtype,
-                        weight_dtype,
-                        bias_dtype_opt
-                            .map(|dt| format!("{:?}", dt))
-                            .unwrap_or_else(|| "None".to_string()),
-                        dst_dtype
-                    )));
-                }
 
-                let gpu_op = GPUOperation::Conv_3D;
-
-                gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
+                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
                 gpu.bind_storage_buffers_optional(
                     command_buffer,
                     &[Some(src_mem), Some(weights_mem), Some(dst_mem), bias_mem],
                 );
 
-                gpu.bind_push_constants(command_buffer, gpu_op, push_constant_bytes);
+                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
 
                 // dispatch over (w, h, depth * batch)
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, total_z]);
             }
-            _ => unimplemented!("Unsupported spatial rank {} for GPU conv", spatial_rank),
+            _ => unreachable!(),
         }
 
         Ok(())

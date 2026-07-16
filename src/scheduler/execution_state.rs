@@ -258,8 +258,10 @@ fn create_gpu_chunk_command_buffer(
             for &op_id in layer {
                 let instruction = compute_manager.tensor_graph.get_instruction_or_panic(op_id);
 
+                let op_opt = instruction.pick_gpu_operation(compute_manager)?;
+
                 instruction
-                    .record_into_command_buffer(&gpu, command_buffer, compute_manager)
+                    .record_into_command_buffer(&gpu, command_buffer, compute_manager, op_opt)
                     .map_err(|err| {
                         VKMLError::Gpu(format!(
                             "Failed to record commands for op {}: {}",

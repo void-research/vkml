@@ -7,6 +7,7 @@ use crate::instruction::reducemean::f32_cpu::f32_cpu;
 use crate::instruction::reducemean::push_constants::ReduceMeanPushConstants;
 use crate::instruction::{GPUOperation, Instruction};
 use crate::utils::as_bytes;
+use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{ComputeManager, tensor::TensorDesc, tensor_graph::TensorId};
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
@@ -48,12 +49,46 @@ impl Instruction for ReduceMeanInstruction {
         }
     }
 
+    fn gpu_supported_types(&self) -> &[DataType] {
+        slang_iarithmetic_types()
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
+        let src_t = cm.tensor_read(self.src);
+        let dst_t = cm.tensor_read(self.dst);
+        let src_dtype = src_t.desc().data_type();
+        let dst_dtype = dst_t.desc().data_type();
+
+        if src_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU ReduceMean unimplemented for DataType src:{:?}, dst:{:?}",
+                src_dtype, dst_dtype
+            )));
+        }
+        Ok(Some(GPUOperation::ReduceMean))
+    }
+
     fn record_into_command_buffer(
         &self,
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
+        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::ReduceMean) => GPUOperation::ReduceMean,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for ReduceMean",
+                    op
+                )));
+            }
+        };
+
         // GPU implementation: two-pass reduction (sum then scale)
         let src_t = cm.tensor_read(self.src);
         let src_mem = src_t.get_gpu_memory_or_panic();
@@ -104,18 +139,9 @@ impl Instruction for ReduceMeanInstruction {
         };
         let mean_pc_bytes = as_bytes(&mean_pc);
 
-        let src_dtype = src_t.desc().data_type();
         let dst_dtype = dst_t.desc().data_type();
 
-        // Select GPUOperation based on DataType trio (src,dst)
-        if src_dtype != dst_dtype {
-            return Err(VKMLError::Instruction(format!(
-                "GPU ReduceMean unimplemented for DataType src:{:?}, dst:{:?}",
-                src_dtype, dst_dtype
-            )));
-        }
-
-        let gpu_op = GPUOperation::ReduceMean;
+        let gpu_op = op_name;
 
         // Choose a local size for dispatch (1D op)
         let local_size = gpu.optimal_workgroup_size_1d(out_elements);

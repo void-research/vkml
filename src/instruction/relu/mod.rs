@@ -1,6 +1,7 @@
 mod f32_f32_cpu;
 
 use crate::VKMLError;
+use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
     ComputeManager,
     gpu::vk_gpu::Gpu,
@@ -8,6 +9,7 @@ use crate::{
     tensor::TensorDesc,
     tensor_graph::TensorId,
 };
+
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
@@ -42,20 +44,17 @@ impl Instruction for ReLUInstruction {
         }
     }
 
-    fn record_into_command_buffer(
-        &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
+    fn gpu_supported_types(&self) -> &[DataType] {
+        slang_iarithmetic_types()
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
         let src_tensor = cm.tensor_read(self.src);
-        let src_mem = src_tensor.get_gpu_memory_or_panic();
         let dst_tensor = cm.tensor_read(self.dst);
-        let dst_mem = dst_tensor.get_gpu_memory_or_panic();
-
-        let num_elements = dst_tensor.desc().num_elements() as u64;
-
-        // Choose operation based on DataType
         let src_dtype = src_tensor.desc().data_type();
         let dst_dtype = dst_tensor.desc().data_type();
 
@@ -65,8 +64,34 @@ impl Instruction for ReLUInstruction {
                 src_dtype, dst_dtype
             )));
         }
+        Ok(Some(GPUOperation::ReLU))
+    }
 
-        let op_name = GPUOperation::ReLU;
+    fn record_into_command_buffer(
+        &self,
+        gpu: &Gpu,
+        command_buffer: vk::CommandBuffer,
+        cm: &ComputeManager,
+        op: Option<GPUOperation>,
+    ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::ReLU) => GPUOperation::ReLU,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for ReLU",
+                    op
+                )));
+            }
+        };
+
+        let src_tensor = cm.tensor_read(self.src);
+        let src_mem = src_tensor.get_gpu_memory_or_panic();
+        let dst_tensor = cm.tensor_read(self.dst);
+        let dst_mem = dst_tensor.get_gpu_memory_or_panic();
+
+        let num_elements = dst_tensor.desc().num_elements() as u64;
+
+        let dst_dtype = dst_tensor.desc().data_type();
 
         let local_size = gpu.optimal_workgroup_size_1d(num_elements);
 

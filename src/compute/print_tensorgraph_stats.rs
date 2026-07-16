@@ -74,6 +74,10 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
                 );
                 println!("  Instruction: {}", instruction);
 
+                if let Ok(Some(gpu_op)) = cm.tensor_graph.operations[op_id].pick_gpu_operation(cm) {
+                    println!("  GPU Operation: {:?}", gpu_op);
+                }
+
                 let inputs = cm.tensor_graph.get_operation_inputs(op_id);
                 println!("  Inputs:");
                 for input in inputs {

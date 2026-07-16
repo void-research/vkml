@@ -9,6 +9,7 @@ use crate::instruction::matmul::push_constants::{
     MatMul3D2DPushConstants, MatMul3D3DPushConstants,
 };
 use crate::utils::bytes::as_bytes;
+use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
     ComputeManager,
     gpu::vk_gpu::Gpu,
@@ -56,12 +57,15 @@ impl Instruction for MatMulInstruction {
         }
     }
 
-    fn record_into_command_buffer(
-        &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
+    fn gpu_supported_types(&self) -> &[DataType] {
+        slang_iarithmetic_types()
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
         let src1_tensor = cm.tensor_read(self.src1);
         let src2_tensor = cm.tensor_read(self.src2);
         let dst_tensor = cm.tensor_read(self.dst);
@@ -70,7 +74,6 @@ impl Instruction for MatMulInstruction {
         let src2_dtype = src2_tensor.desc().data_type();
         let dst_dtype = dst_tensor.desc().data_type();
 
-        // Determine GPU operation based on dimensions and datatypes
         let operation = determine_operation(
             src1_tensor.desc().dims(),
             src2_tensor.desc().dims(),
@@ -79,13 +82,78 @@ impl Instruction for MatMulInstruction {
             dst_dtype,
         )?;
 
+        // If it's MatMul_2D2D, check for tiled variants
+        if operation == GPUOperation::MatMul_2D2D {
+            let m = src1_tensor.desc().dims()[0] as u64;
+            let n = src2_tensor.desc().dims()[1] as u64;
+            let gpu = cm.gpu_ref(0);
+            let max_shmem = gpu.max_shared_memory_size();
+
+            let variants = [
+                (32, 8192, GPUOperation::MatMul_2D2D_Tiled_32x32),
+                (16, 2048, GPUOperation::MatMul_2D2D_Tiled_16x16),
+                (8, 512, GPUOperation::MatMul_2D2D_Tiled_8x8),
+            ];
+
+            for (tile_size, shmem_req, op) in variants {
+                if max_shmem >= shmem_req {
+                    let min_threshold = match tile_size {
+                        32 => 16,
+                        16 => 1,
+                        8 => 1,
+                        _ => 0,
+                    };
+                    let max_threshold = match tile_size {
+                        32 => 256,
+                        16 => 32,
+                        8 => 8,
+                        _ => 0,
+                    };
+
+                    let min_dim = m.min(n);
+                    let max_dim = m.max(n);
+
+                    if min_dim >= min_threshold && max_dim >= max_threshold {
+                        return Ok(Some(op));
+                    }
+                }
+            }
+        }
+
+        Ok(Some(operation))
+    }
+
+    fn record_into_command_buffer(
+        &self,
+        gpu: &Gpu,
+        command_buffer: vk::CommandBuffer,
+        cm: &ComputeManager,
+        op: Option<GPUOperation>,
+    ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::MatMul_2D2D) => GPUOperation::MatMul_2D2D,
+            Some(GPUOperation::MatMul_2D2D_Tiled_8x8) => GPUOperation::MatMul_2D2D_Tiled_8x8,
+            Some(GPUOperation::MatMul_2D2D_Tiled_16x16) => GPUOperation::MatMul_2D2D_Tiled_16x16,
+            Some(GPUOperation::MatMul_2D2D_Tiled_32x32) => GPUOperation::MatMul_2D2D_Tiled_32x32,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for MatMul",
+                    op
+                )));
+            }
+        };
+
+        let src1_tensor = cm.tensor_read(self.src1);
+        let src2_tensor = cm.tensor_read(self.src2);
+        let dst_tensor = cm.tensor_read(self.dst);
+
         execute_gpu_matmul(
             gpu,
             command_buffer,
-            src1_tensor,
-            src2_tensor,
-            dst_tensor,
-            operation,
+            &src1_tensor,
+            &src2_tensor,
+            &dst_tensor,
+            op_name,
         )
     }
 
@@ -245,7 +313,10 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul_2D2D => {
+        GPUOperation::MatMul_2D2D
+        | GPUOperation::MatMul_2D2D_Tiled_8x8
+        | GPUOperation::MatMul_2D2D_Tiled_16x16
+        | GPUOperation::MatMul_2D2D_Tiled_32x32 => {
             // [m,k] × [k,n] → [m,n]
             let m = src1_dims[0];
             let k = src1_dims[1];
@@ -263,11 +334,14 @@ fn execute_gpu_matmul(
                 stride_c1: dst_strides[1] as u32,
             };
 
-            (
-                gpu.optimal_workgroup_size_2d(m as u64, n as u64),
-                as_bytes(&pc).to_vec(),
-                [n as u64, m as u64, 1],
-            )
+            let local_size = match operation {
+                GPUOperation::MatMul_2D2D_Tiled_8x8 => [8, 8, 1],
+                GPUOperation::MatMul_2D2D_Tiled_16x16 => [16, 16, 1],
+                GPUOperation::MatMul_2D2D_Tiled_32x32 => [32, 32, 1],
+                _ => gpu.optimal_workgroup_size_2d(m as u64, n as u64),
+            };
+
+            (local_size, as_bytes(&pc).to_vec(), [n as u64, m as u64, 1])
         }
 
         GPUOperation::MatMul_2D3D => {
@@ -416,53 +490,16 @@ fn execute_gpu_matmul(
         }
     };
 
-    // Optimized tiled shader for 2D×2D MatMul - select best variant
-    if operation == GPUOperation::MatMul_2D2D {
-        let m = src1_dims[0] as u64;
-        let n = src2_dims[1] as u64;
-        let max_shmem = gpu.max_shared_memory_size();
+    let push_constant_op = match operation {
+        GPUOperation::MatMul_2D2D_Tiled_8x8
+        | GPUOperation::MatMul_2D2D_Tiled_16x16
+        | GPUOperation::MatMul_2D2D_Tiled_32x32 => GPUOperation::MatMul_2D2D,
+        _ => operation,
+    };
 
-        // Tile size selection: [tile_size, threads, shmem_required_bytes, operation]
-        let variants = [
-            (32, [32, 32, 1], 8192, GPUOperation::MatMul_2D2D_Tiled_32x32),
-            (16, [16, 16, 1], 2048, GPUOperation::MatMul_2D2D_Tiled_16x16),
-            (8, [8, 8, 1], 512, GPUOperation::MatMul_2D2D_Tiled_8x8),
-        ];
-
-        // Select best tile size based on shared memory AND matrix dimensions
-        for (tile_size, local_size, shmem_req, op) in variants {
-            if max_shmem >= shmem_req {
-                let min_threshold = match tile_size {
-                    32 => 16,
-                    16 => 1,
-                    8 => 1,
-                    _ => 0,
-                };
-                let max_threshold = match tile_size {
-                    32 => 256,
-                    16 => 32,
-                    8 => 8,
-                    _ => 0,
-                };
-
-                let min_dim = m.min(n);
-                let max_dim = m.max(n);
-
-                if min_dim >= min_threshold && max_dim >= max_threshold {
-                    gpu.bind_slang_compute_pipeline(command_buffer, op, dst_dtype, local_size);
-                    gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
-                    gpu.bind_push_constants(command_buffer, operation, &push_constants_bytes);
-                    gpu.dispatch(command_buffer, local_size, [n, m, 1]);
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    // Standard pipeline path
     gpu.bind_slang_compute_pipeline(command_buffer, operation, dst_dtype, local_size);
     gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
-    gpu.bind_push_constants(command_buffer, operation, &push_constants_bytes);
+    gpu.bind_push_constants(command_buffer, push_constant_op, &push_constants_bytes);
     gpu.dispatch(command_buffer, local_size, work_size);
 
     Ok(())

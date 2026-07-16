@@ -5,6 +5,7 @@ use crate::VKMLError;
 use crate::instruction::gemm::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu;
 use crate::instruction::gemm::push_constants::GemmPushConstants;
 use crate::utils::bytes::as_bytes;
+use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
     ComputeManager,
     gpu::vk_gpu::Gpu,
@@ -66,12 +67,99 @@ impl Instruction for GemmInstruction {
         }
     }
 
+    fn gpu_supported_types(&self) -> &[DataType] {
+        slang_iarithmetic_types()
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
+        let a_tensor = cm.tensor_read(self.a);
+        let b_tensor = cm.tensor_read(self.b);
+        let y_tensor = cm.tensor_read(self.y);
+        let c_tensor = self.c.map(|c| cm.tensor_read(c));
+
+        let a_dtype = a_tensor.desc().data_type();
+        let b_dtype = b_tensor.desc().data_type();
+        let c_dtype_opt = c_tensor.as_ref().map(|t| t.desc().data_type());
+        let y_dtype = y_tensor.desc().data_type();
+
+        if a_dtype != b_dtype
+            || a_dtype != y_dtype
+            || (c_dtype_opt.is_some() && c_dtype_opt != Some(a_dtype))
+        {
+            return Err(VKMLError::Instruction(format!(
+                "GPU GEMM unimplemented for mixed DataType a:{:?}, b:{:?}, c:{}, y:{:?}",
+                a_dtype,
+                b_dtype,
+                c_dtype_opt
+                    .map(|dt| format!("{:?}", dt))
+                    .unwrap_or_else(|| "None".to_string()),
+                y_dtype
+            )));
+        }
+
+        let a_dims = a_tensor.desc().dims();
+        let b_dims = b_tensor.desc().dims();
+        let y_dims = y_tensor.desc().dims();
+
+        let (m, _, n) =
+            compute_gemm_dimensions(a_dims, b_dims, y_dims, self.trans_a, self.trans_b)?;
+
+        let gpu = cm.gpu_ref(0);
+        let max_shmem = gpu.max_shared_memory_size();
+
+        let variants = [
+            (32, 8192, GPUOperation::Gemm_2D2D_Tiled_32x32),
+            (16, 2048, GPUOperation::Gemm_2D2D_Tiled_16x16),
+            (8, 512, GPUOperation::Gemm_2D2D_Tiled_8x8),
+        ];
+
+        let m_u64 = m as u64;
+        let n_u64 = n as u64;
+        let min_dim = m_u64.min(n_u64);
+        let max_dim = m_u64.max(n_u64);
+
+        for (tile_size, shmem_req, op) in variants {
+            if max_shmem >= shmem_req {
+                let (min_threshold, max_threshold) = match tile_size {
+                    32 => (16, 256),
+                    16 => (1, 32),
+                    8 => (1, 8),
+                    _ => (u64::MAX, u64::MAX),
+                };
+
+                if min_dim >= min_threshold && max_dim >= max_threshold {
+                    return Ok(Some(op));
+                }
+            }
+        }
+
+        Ok(Some(GPUOperation::Gemm))
+    }
+
     fn record_into_command_buffer(
         &self,
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
+        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::Gemm) => GPUOperation::Gemm,
+            Some(GPUOperation::Gemm_2D2D_Tiled_8x8) => GPUOperation::Gemm_2D2D_Tiled_8x8,
+            Some(GPUOperation::Gemm_2D2D_Tiled_16x16) => GPUOperation::Gemm_2D2D_Tiled_16x16,
+            Some(GPUOperation::Gemm_2D2D_Tiled_32x32) => GPUOperation::Gemm_2D2D_Tiled_32x32,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for Gemm",
+                    op
+                )));
+            }
+        };
+
         let a_tensor = cm.tensor_read(self.a);
         let b_tensor = cm.tensor_read(self.b);
         let c_tensor = self.c.map(|c| cm.tensor_read(c));
@@ -121,80 +209,42 @@ impl Instruction for GemmInstruction {
         // Choose optimal workgroup size for 2D matrix operation
         let local_size = gpu.optimal_workgroup_size_2d(n as u64, m as u64);
 
-        let a_dtype = a_tensor.desc().data_type();
-        let b_dtype = b_tensor.desc().data_type();
-        let c_dtype_opt = c_tensor.as_ref().map(|t| t.desc().data_type());
         let y_dtype = y_tensor.desc().data_type();
 
-        if a_dtype != b_dtype
-            || a_dtype != y_dtype
-            || (c_dtype_opt.is_some() && c_dtype_opt != Some(a_dtype))
-        {
-            return Err(VKMLError::Instruction(format!(
-                "GPU GEMM unimplemented for mixed DataType a:{:?}, b:{:?}, c:{}, y:{:?}",
-                a_dtype,
-                b_dtype,
-                c_dtype_opt
-                    .map(|dt| format!("{:?}", dt))
-                    .unwrap_or_else(|| "None".to_string()),
-                y_dtype
-            )));
-        }
-
-        let gpu_op = GPUOperation::Gemm;
-
-        // Optimized tiled shader for GEMM
-        {
-            // Tile size selection: [tile_size, threads, shmem_required_bytes, operation]
-            let variants = [
-                (32, [32, 32, 1], 8192, GPUOperation::Gemm_2D2D_Tiled_32x32),
-                (16, [16, 16, 1], 2048, GPUOperation::Gemm_2D2D_Tiled_16x16),
-                (8, [8, 8, 1], 512, GPUOperation::Gemm_2D2D_Tiled_8x8),
-            ];
-
-            let m_u64 = m as u64;
-            let n_u64 = n as u64;
-            let max_shmem = gpu.max_shared_memory_size();
-            let min_dim = m_u64.min(n_u64);
-            let max_dim = m_u64.max(n_u64);
-
-            for (tile_size, tiled_local_size, shmem_req, op) in variants {
-                if max_shmem >= shmem_req {
-                    let (min_threshold, max_threshold) = match tile_size {
-                        32 => (16, 256),
-                        16 => (1, 32),
-                        8 => (1, 8),
-                        4 => (0, 0),
-                        _ => (u64::MAX, u64::MAX),
-                    };
-
-                    if min_dim >= min_threshold && max_dim >= max_threshold {
-                        gpu.bind_slang_compute_pipeline(
-                            command_buffer,
-                            op,
-                            y_dtype,
-                            tiled_local_size,
-                        );
-                        gpu.bind_storage_buffers_optional(
-                            command_buffer,
-                            &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
-                        );
-                        gpu.bind_push_constants(command_buffer, gpu_op, as_bytes(&pc));
-                        gpu.dispatch(command_buffer, tiled_local_size, [n as u64, m as u64, 1]);
-                        return Ok(());
-                    }
-                }
+        match op_name {
+            GPUOperation::Gemm => {
+                gpu.bind_slang_compute_pipeline(command_buffer, op_name, y_dtype, local_size);
+                gpu.bind_storage_buffers_optional(
+                    command_buffer,
+                    &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
+                );
+                gpu.bind_push_constants(command_buffer, op_name, as_bytes(&pc));
+                gpu.dispatch(command_buffer, local_size, [n as u64, m as u64, 1]);
+            }
+            GPUOperation::Gemm_2D2D_Tiled_8x8
+            | GPUOperation::Gemm_2D2D_Tiled_16x16
+            | GPUOperation::Gemm_2D2D_Tiled_32x32 => {
+                let tiled_local_size = match op_name {
+                    GPUOperation::Gemm_2D2D_Tiled_8x8 => [8, 8, 1],
+                    GPUOperation::Gemm_2D2D_Tiled_16x16 => [16, 16, 1],
+                    GPUOperation::Gemm_2D2D_Tiled_32x32 => [32, 32, 1],
+                    _ => unreachable!(),
+                };
+                gpu.bind_slang_compute_pipeline(command_buffer, op_name, y_dtype, tiled_local_size);
+                gpu.bind_storage_buffers_optional(
+                    command_buffer,
+                    &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
+                );
+                gpu.bind_push_constants(command_buffer, GPUOperation::Gemm, as_bytes(&pc));
+                gpu.dispatch(command_buffer, tiled_local_size, [n as u64, m as u64, 1]);
+            }
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for Gemm",
+                    op_name
+                )));
             }
         }
-
-        // Standard pipeline path
-        gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, y_dtype, local_size);
-        gpu.bind_storage_buffers_optional(
-            command_buffer,
-            &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
-        );
-        gpu.bind_push_constants(command_buffer, gpu_op, as_bytes(&pc));
-        gpu.dispatch(command_buffer, local_size, [n as u64, m as u64, 1]);
 
         Ok(())
     }

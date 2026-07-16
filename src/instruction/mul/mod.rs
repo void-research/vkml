@@ -5,6 +5,7 @@ use crate::ComputeManager;
 use crate::VKMLError;
 use crate::instruction::mul::push_constants::MulPushConstants;
 use crate::utils::as_bytes;
+use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
     gpu::vk_gpu::Gpu,
     instruction::{
@@ -53,12 +54,81 @@ impl Instruction for MulInstruction {
         }
     }
 
+    fn gpu_supported_types(&self) -> &[DataType] {
+        slang_iarithmetic_types()
+    }
+
+    fn cpu_supported_types(&self) -> &[DataType] {
+        &[DataType::Float]
+    }
+
+    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
+        let src1_tensor = cm.tensor_read(self.src1);
+        let src2_tensor = cm.tensor_read(self.src2);
+        let dst_tensor = cm.tensor_read(self.dst);
+
+        let src1_desc = src1_tensor.desc();
+        let src2_desc = src2_tensor.desc();
+        let dst_desc = dst_tensor.desc();
+
+        // Datatype verification
+        let src1_dtype = src1_desc.data_type();
+        let src2_dtype = src2_desc.data_type();
+        let dst_dtype = dst_desc.data_type();
+        if src1_dtype != src2_dtype || src1_dtype != dst_dtype {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Mul unimplemented for mixed DataType src1:{:?}, src2:{:?}, dst:{:?}",
+                src1_dtype, src2_dtype, dst_dtype
+            )));
+        }
+
+        let src1_dims = src1_desc.dims();
+        let src2_dims = src2_desc.dims();
+        let dst_dims = dst_desc.dims();
+
+        let rank = dst_dims.len() as u32;
+        if rank > 8 {
+            return Err(VKMLError::Instruction(format!(
+                "Mul: tensor rank {} exceeds maximum supported rank of 8",
+                rank
+            )));
+        }
+
+        let broadcast_dims =
+            TensorDesc::broadcast_shape(src1_dims, src2_dims).ok_or_else(|| {
+                VKMLError::Instruction(format!(
+                    "GPU Mul: Can't broadcast {:?} vs {:?}",
+                    src1_dims, src2_dims
+                ))
+            })?;
+
+        if broadcast_dims.as_slice() != dst_dims {
+            return Err(VKMLError::Instruction(format!(
+                "GPU Mul: Broadcast shape {:?} != dst shape {:?}",
+                broadcast_dims, dst_dims
+            )));
+        }
+
+        Ok(Some(GPUOperation::Multiply))
+    }
+
     fn record_into_command_buffer(
         &self,
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
+        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
+        let op_name = match op {
+            Some(GPUOperation::Multiply) => GPUOperation::Multiply,
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Invalid GPUOperation {:?} for Mul",
+                    op
+                )));
+            }
+        };
+
         let src1_tensor = cm.tensor_read(self.src1);
         let src1_mem = src1_tensor.get_gpu_memory_or_panic();
         let src2_tensor = cm.tensor_read(self.src2);
@@ -66,7 +136,6 @@ impl Instruction for MulInstruction {
         let dst_tensor = cm.tensor_read(self.dst);
         let dst_mem = dst_tensor.get_gpu_memory_or_panic();
 
-        // Get tensor descriptions for calculating broadcast shapes and strides
         let src1_desc = src1_tensor.desc();
         let src2_desc = src2_tensor.desc();
         let dst_desc = dst_tensor.desc();
@@ -75,36 +144,12 @@ impl Instruction for MulInstruction {
         let src2_dims = src2_desc.dims();
         let dst_dims = dst_desc.dims();
 
-        // Prepare push constant data using shared PushConstants
-
         let rank = dst_dims.len() as u32;
-        assert!(
-            rank <= 8,
-            "Mul: tensor rank {} exceeds maximum supported rank of 8",
-            rank
-        );
 
         let mut dims_arr = [0u32; 8];
         for (i, &d) in dst_dims.iter().enumerate().take(8) {
             dims_arr[i] = d as u32;
         }
-
-        // Calculate broadcast shape and strides (similar to execute_cpu)
-        let broadcast_dims =
-            TensorDesc::broadcast_shape(src1_dims, src2_dims).unwrap_or_else(|| {
-                panic!(
-                    "GPU Mul: Can't broadcast {:?} vs {:?}",
-                    src1_dims, src2_dims
-                )
-            });
-
-        assert_eq!(
-            broadcast_dims.as_slice(),
-            dst_dims,
-            "GPU Mul: Broadcast shape {:?} != dst shape {:?}",
-            broadcast_dims,
-            dst_dims
-        );
 
         let strides_a_usize = TensorDesc::broadcast_strides(src1_dims, dst_dims);
         let strides_b_usize = TensorDesc::broadcast_strides(src2_dims, dst_dims);
@@ -123,7 +168,7 @@ impl Instruction for MulInstruction {
 
         let push_const_values = MulPushConstants {
             rank,
-            pad: 0, // Padding value, 0 is fine
+            pad: 0,
             total: total_elements as u32,
             dims: dims_arr,
             strides_a: strides_a_arr,
@@ -131,27 +176,13 @@ impl Instruction for MulInstruction {
         };
 
         let push_constant_bytes = as_bytes(&push_const_values);
-
-        let src1_dtype = src1_desc.data_type();
-        let src2_dtype = src2_desc.data_type();
         let dst_dtype = dst_desc.data_type();
 
-        if src1_dtype != src2_dtype || src1_dtype != dst_dtype {
-            return Err(VKMLError::Instruction(format!(
-                "GPU Mul unimplemented for mixed DataType src1:{:?}, src2:{:?}, dst:{:?}",
-                src1_dtype, src2_dtype, dst_dtype
-            )));
-        }
-
-        let op_name = GPUOperation::Multiply;
-
-        // Choose 1D local workgroup size and bind pipeline/descriptors
         let local_size = gpu.optimal_workgroup_size_1d(total_elements);
 
         gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
 
-        // Push constants to the shader
         gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
 
         let num_elements: u64 = dst_dims.iter().map(|d| *d as u64).product();

@@ -53,3 +53,41 @@ pub fn onnx_dtype_to_slang_type(dtype: DataType) -> &'static str {
         ),
     }
 }
+
+// Datatypes that are not Undefined
+pub fn onnx_datatype_all_valid() -> &'static [DataType] {
+    &[
+        DataType::Float,
+        DataType::Float16,
+        DataType::Double,
+        DataType::Int8,
+        DataType::Uint8,
+        DataType::Int16,
+        DataType::Uint16,
+        DataType::Int32,
+        DataType::Uint32,
+        DataType::Int64,
+        DataType::Uint64,
+        DataType::Bool,
+        DataType::Bfloat16,
+        DataType::Float8e4m3fn,
+        DataType::Float8e5m2,
+    ]
+}
+
+// Not Bool, BF16, F8e4 or F8e5
+pub fn slang_iarithmetic_types() -> &'static [DataType] {
+    &[
+        DataType::Float,
+        DataType::Float16,
+        DataType::Double,
+        DataType::Int8,
+        DataType::Uint8,
+        DataType::Int16,
+        DataType::Uint16,
+        DataType::Int32,
+        DataType::Uint32,
+        DataType::Int64,
+        DataType::Uint64,
+    ]
+}
