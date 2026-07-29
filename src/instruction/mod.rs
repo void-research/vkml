@@ -96,10 +96,15 @@ pub trait Instruction: Debug {
     fn execute_cpu(&self, _cm: &ComputeManager) {
         panic!("CPU execution not implemented for {:?}", self)
     }
+}
 
-    // Return true if this instruction must be executed on the CPU (eg transfers)
-    fn must_execute_on_cpu(&self) -> bool {
-        false
+impl dyn Instruction {
+    // Check if this instruction supports running on `device` for data type `dtype`
+    pub fn supports_device(&self, device: DeviceId, dtype: DataType) -> bool {
+        match device {
+            DeviceId::Gpu(_) => self.gpu_supported_types().contains(&dtype),
+            DeviceId::Cpu => self.cpu_supported_types().contains(&dtype),
+        }
     }
 }
 

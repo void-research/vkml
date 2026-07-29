@@ -22,13 +22,10 @@ impl Debug for TransferToDeviceInstruction {
 }
 
 impl Instruction for TransferToDeviceInstruction {
-    fn gpu_supported_types(&self) -> &[DataType] {
-        &[]
-    }
-
     fn cpu_supported_types(&self) -> &[DataType] {
         onnx_datatype_all_valid()
     }
+
     fn get_input_tensor_ids(&self) -> Vec<TensorId> {
         vec![self.src]
     }
@@ -45,10 +42,6 @@ impl Instruction for TransferToDeviceInstruction {
         if !new_outputs.is_empty() {
             self.dst = new_outputs[0];
         }
-    }
-
-    fn must_execute_on_cpu(&self) -> bool {
-        true
     }
 
     fn execute_cpu(&self, cm: &ComputeManager) {

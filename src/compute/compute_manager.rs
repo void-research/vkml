@@ -234,9 +234,20 @@ impl ComputeManager {
             let input_tensors = instruction.get_input_tensor_ids();
             let output_tensors = instruction.get_output_tensor_ids();
 
+            let tid = output_tensors
+                .first()
+                .or_else(|| input_tensors.first())
+                .copied()
+                .expect("Operation must reference at least one tensor");
+            let dtype = self.tensor_graph.tensor_descs[tid].data_type();
+
             let dev_idx = available_memory
                 .iter()
                 .position(|(cand_device, available)| {
+                    if !instruction.supports_device(*cand_device, dtype) {
+                        return false;
+                    }
+
                     let mut needed = 0u64;
                     for &tid in input_tensors.iter().chain(output_tensors.iter()) {
                         match &tensor_locations[tid] {
@@ -256,8 +267,8 @@ impl ComputeManager {
                 })
                 .ok_or_else(|| {
                     VKMLError::ComputeManager(format!(
-                        "Operation {:?} cannot fit on any device",
-                        op_id
+                        "Operation {:?} ({:?}, type: {:?}) cannot fit on any device or is unsupported",
+                        op_id, instruction, dtype
                     ))
                 })?;
 

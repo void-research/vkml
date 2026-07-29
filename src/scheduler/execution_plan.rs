@@ -104,17 +104,18 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
         // By default use the tensor's device, but if the instruction requires CPU execution
         // force the op onto the CPU slot.
         let op_ref = &tensor_graph.operations[op];
-        let mut device = {
-            let tensor_id = op_ref
-                .get_output_tensor_ids()
-                .first()
-                .copied()
-                .or_else(|| op_ref.get_input_tensor_ids().first().copied())
-                .expect("Operation must reference at least one tensor");
-            compute_manager.tensor_read(tensor_id).device()
-        };
 
-        if op_ref.must_execute_on_cpu() {
+        let tensor_id = op_ref
+            .get_output_tensor_ids()
+            .first()
+            .copied()
+            .or_else(|| op_ref.get_input_tensor_ids().first().copied())
+            .expect("Operation must reference at least one tensor");
+
+        let mut device = compute_manager.tensor_read(tensor_id).device();
+        let dtype = compute_manager.tensor_read(tensor_id).desc().data_type();
+
+        if !op_ref.supports_device(device, dtype) {
             device = DeviceId::Cpu;
         }
 
