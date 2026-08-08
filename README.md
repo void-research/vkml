@@ -107,6 +107,7 @@ cargo build --release
 ## References
 
 ### Vulkan Resources
+* [VkDoc](https://vkdoc.net)
 * [Cooperative Matrix Performance](https://github.com/jeffbolznv/vk_cooperative_matrix_perf)
 * [VkFFT](https://github.com/DTolm/VkFFT) — [IEEE Paper](https://ieeexplore.ieee.org/document/10036080)
 * [Vulkan Tutorial](https://vulkan-tutorial.com/resources/vulkan_tutorial_en.pdf)
@@ -119,6 +120,7 @@ cargo build --release
 * [Candle](https://github.com/huggingface/candle)
 * [tinygrad](https://github.com/tinygrad/tinygrad)
 * [AdaptiveCpp](https://adaptivecpp.github.io/AdaptiveCpp/)
+* [Wonnx](https://github.com/webonnx/wonnx)
 
 ## License
 
@@ -173,4 +175,5 @@ Internal implementation notes, assumptions, and planned work.
   * As of 1.3.300 [VK_NV_cooperative_matrix](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NV_cooperative_matrix.html)
   * As of 1.4.317 [VK_EXT_shader_float8](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_shader_float8.html)
   * As of 1.4.319 [VK_ARM_data_graph](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_ARM_data_graph.html)
+  * as of 1.4.359 [VK_EXT_cooperative_matrix_maintenance1](https://vkdoc.net/extensions/VK_EXT_cooperative_matrix_maintenance1)
 </details>
