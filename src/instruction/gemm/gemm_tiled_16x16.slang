@@ -34,12 +34,12 @@ void main<T : IArithmetic>(
     uint thread_row = threadId.y;
     uint thread_col = threadId.x;
 
-    uint out_row = tile_row * 16 + thread_row;
-    uint out_col = tile_col * 16 + thread_col;
+    const uint TILE_SIZE = 16;
+
+    uint out_row = tile_row * TILE_SIZE + thread_row;
+    uint out_col = tile_col * TILE_SIZE + thread_col;
 
     T acc = T(0);
-
-    const uint TILE_SIZE = 16;
 
     uint stride_a_k = (pc.trans_a != 0) ? pc.stride_a0 : pc.stride_a1;
     uint stride_a_m = (pc.trans_a != 0) ? pc.stride_a1 : pc.stride_a0;
@@ -64,8 +64,8 @@ void main<T : IArithmetic>(
         return;
     }
 
-    static groupshared T tileA[16 * 16];
-    static groupshared T tileB[16 * 16];
+    static groupshared T tileA[TILE_SIZE * TILE_SIZE];
+    static groupshared T tileB[TILE_SIZE * TILE_SIZE];
 
     uint idx = thread_row * TILE_SIZE + thread_col;
 

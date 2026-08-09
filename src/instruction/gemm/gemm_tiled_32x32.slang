@@ -35,6 +35,7 @@ void main<T : IArithmetic>(
     uint thread_col = threadId.x;
 
     const uint TILE_SIZE = 32;
+
     uint out_row = tile_row * TILE_SIZE + thread_row;
     uint out_col = tile_col * TILE_SIZE + thread_col;
 
