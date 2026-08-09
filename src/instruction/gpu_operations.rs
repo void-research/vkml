@@ -1,5 +1,6 @@
 use crate::VKMLError;
 
+// TODO: Investigate Slang compile generics, eg MatMul_2D2D(usize, usize)
 #[allow(non_camel_case_types)]
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
 pub enum GPUOperation {
