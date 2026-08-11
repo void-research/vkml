@@ -38,7 +38,6 @@ pub fn parse_onnx_model(
         tensor_descs.push(onnx_tensor_desc.clone());
 
         // Extract tensor data using into_data() for zero-copy
-        // Since we are the only holders of OnnxModel, Cow into_owned will not copy
         let initialiser = onnx_tensor
             .into_data()
             .ok()
