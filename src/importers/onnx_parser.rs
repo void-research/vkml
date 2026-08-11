@@ -373,25 +373,25 @@ fn convert_onnx_operation_to_instruction(
             let auto_pad_val = auto_pad.unwrap_or(OnnxAutoPad::NotSet);
 
             // pads: only allowed when auto_pad == NOTSET
-            if let Some(val) = onnx_op.attributes_mut().remove("pads") {
+            if let Some(val) = onnx_op.attributes_mut().remove("pads")
+                && let Some(pv) = val.into_ints()
+            {
                 if auto_pad_val != OnnxAutoPad::NotSet {
                     return Err(VKMLError::OnnxImporter(
                         "Conv: 'pads' and 'auto_pad' cannot be used together".to_string(),
                     ));
                 }
-                if let Some(pv) = val.into_ints() {
-                    if pv.iter().any(|x| *x < 0) {
-                        return Err(VKMLError::OnnxImporter(
-                            "Pads must be non-negative for Conv operation".to_string(),
-                        ));
-                    }
-                    if pv.len() % 2 != 0 {
-                        return Err(VKMLError::OnnxImporter(
-                            "Invalid 'pads' attribute length for Conv operation".to_string(),
-                        ));
-                    }
-                    pads = pv;
+                if pv.iter().any(|x| *x < 0) {
+                    return Err(VKMLError::OnnxImporter(
+                        "Pads must be non-negative for Conv operation".to_string(),
+                    ));
                 }
+                if pv.len() % 2 != 0 {
+                    return Err(VKMLError::OnnxImporter(
+                        "Invalid 'pads' attribute length for Conv operation".to_string(),
+                    ));
+                }
+                pads = pv;
             }
 
             Ok(instruction::conv(

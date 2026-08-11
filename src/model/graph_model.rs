@@ -89,19 +89,17 @@ impl GraphModel {
         for connection in &input_connections {
             let input_id = connection.get_layerid();
 
-            if let Some(input_layer) = self.layers.get_mut(&input_id) {
-                // Check if this layer is already an output for the input layer
-                let already_connected = input_layer
+            // Check if this layer is already an output for the input layer
+            if let Some(input_layer) = self.layers.get_mut(&input_id)
+                && !input_layer
                     .output_connections
                     .iter()
-                    .any(|conn| conn.get_layerid() == id);
-
-                if !already_connected {
-                    // Add this layer as an output connection with default output
-                    input_layer
-                        .output_connections
-                        .push(LayerConnection::DefaultOutput(id));
-                }
+                    .any(|conn| conn.get_layerid() == id)
+            {
+                // Add this layer as an output connection with default output
+                input_layer
+                    .output_connections
+                    .push(LayerConnection::DefaultOutput(id));
             }
         }
 
@@ -248,38 +246,34 @@ impl GraphModel {
             for out_connection in &layer.output_connections {
                 let output_id = out_connection.get_layerid();
 
-                if let Some(output_layer) = self.layers.get(&output_id) {
-                    // Check if the output layer lists this layer as an input
-                    let is_connected = output_layer
+                // Check if the output layer lists this layer as an input
+                if let Some(output_layer) = self.layers.get(&output_id)
+                    && !output_layer
                         .input_connections
                         .iter()
-                        .any(|conn| conn.get_layerid() == layer.id);
-
-                    if !is_connected {
-                        return Err(VKMLError::GraphModel(format!(
-                            "Connection inconsistency: Layer {} lists {} as output, but {} does not list {} as input",
-                            layer.id, output_id, output_id, layer.id
-                        )));
-                    }
+                        .any(|conn| conn.get_layerid() == layer.id)
+                {
+                    return Err(VKMLError::GraphModel(format!(
+                        "Connection inconsistency: Layer {} lists {} as output, but {} does not list {} as input",
+                        layer.id, output_id, output_id, layer.id
+                    )));
                 }
             }
 
             for in_connection in &layer.input_connections {
                 let input_id = in_connection.get_layerid();
 
-                if let Some(input_layer) = self.layers.get(&input_id) {
-                    // Check if the input layer lists this layer as an output
-                    let is_connected = input_layer
+                // Check if the input layer lists this layer as an output
+                if let Some(input_layer) = self.layers.get(&input_id)
+                    && !input_layer
                         .output_connections
                         .iter()
-                        .any(|conn| conn.get_layerid() == layer.id);
-
-                    if !is_connected {
-                        return Err(VKMLError::GraphModel(format!(
-                            "Connection inconsistency: Layer {} lists {} as input, but {} does not list {} as output",
-                            layer.id, input_id, input_id, layer.id
-                        )));
-                    }
+                        .any(|conn| conn.get_layerid() == layer.id)
+                {
+                    return Err(VKMLError::GraphModel(format!(
+                        "Connection inconsistency: Layer {} lists {} as input, but {} does not list {} as output",
+                        layer.id, input_id, input_id, layer.id
+                    )));
                 }
             }
         }

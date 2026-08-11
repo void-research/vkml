@@ -353,11 +353,10 @@ impl ComputeManager {
         // update the tensor_graph.output_tensor_ids to point to the remapped tensor IDs so callers
         // (forward) read the final produced tensors. We use the last remap for each tensor if present.
         for out_id in self.tensor_graph.output_tensor_ids.iter_mut() {
-            if *out_id < tensor_remappings.len() {
-                let remaps = &tensor_remappings[*out_id];
-                if let Some((_, new_id)) = remaps.last() {
-                    *out_id = *new_id;
-                }
+            if *out_id < tensor_remappings.len()
+                && let Some((_, new_id)) = tensor_remappings[*out_id].last()
+            {
+                *out_id = *new_id;
             }
         }
 
