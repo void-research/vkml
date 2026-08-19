@@ -113,7 +113,7 @@ fn convert_onnx_operation_to_instruction(
                 VKMLError::OnnxImporter(format!(
                     "Input tensor '{}' not found for operation '{}'",
                     name,
-                    onnx_op.name()
+                    onnx_op.name().unwrap()
                 ))
             })
         })
@@ -127,7 +127,7 @@ fn convert_onnx_operation_to_instruction(
                 VKMLError::OnnxImporter(format!(
                     "Output tensor '{}' not found for operation '{}'",
                     name,
-                    onnx_op.name()
+                    onnx_op.name().unwrap()
                 ))
             })
         })
