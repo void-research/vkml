@@ -31,9 +31,10 @@ impl Initialiser {
             Initialiser::VecI32(v) => bytemuck::cast_slice(v),
             Initialiser::VecI64(v) => bytemuck::cast_slice(v),
             Initialiser::VecU64(v) => bytemuck::cast_slice(v),
-            Initialiser::Constant(vec) => vec.as_ref(),
 
             Initialiser::None => unimplemented!("None"),
+            // will require knowing what size box to fill
+            Initialiser::Constant(_) => unimplemented!("Constant"),
             Initialiser::VecBytes(_) => unimplemented!("BytesVec"),
             Initialiser::Xavier => unimplemented!("Xavier"),
             Initialiser::Uniform(_, _) => unimplemented!("Uniform"),
@@ -49,14 +50,15 @@ impl Initialiser {
             Initialiser::VecBytes(parts) => parts.iter().flatten().copied().collect::<Box<[u8]>>(),
             Initialiser::BoxU8(boxed) => boxed,
             Initialiser::VecU8(vec) => vec.into(),
-            Initialiser::VecF32(v) => bytemuck::cast_vec(v).into(),
-            Initialiser::VecF64(v) => bytemuck::cast_vec(v).into(),
-            Initialiser::VecI32(v) => bytemuck::cast_vec(v).into(),
-            Initialiser::VecI64(v) => bytemuck::cast_vec(v).into(),
-            Initialiser::VecU64(v) => bytemuck::cast_vec(v).into(),
-            Initialiser::Constant(vec) => vec.into(),
+            Initialiser::VecF32(v) => bytemuck::cast_slice(&v).into(),
+            Initialiser::VecF64(v) => bytemuck::cast_slice(&v).into(),
+            Initialiser::VecI32(v) => bytemuck::cast_slice(&v).into(),
+            Initialiser::VecI64(v) => bytemuck::cast_slice(&v).into(),
+            Initialiser::VecU64(v) => bytemuck::cast_slice(&v).into(),
 
             Initialiser::None => unimplemented!("None"),
+            // will require knowing what size box to fill
+            Initialiser::Constant(_) => unimplemented!("Constant"),
             Initialiser::Xavier => unimplemented!("Xavier"),
             Initialiser::Uniform(_, _) => unimplemented!("Uniform"),
             Initialiser::He => unimplemented!("He"),
