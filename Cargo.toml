@@ -18,6 +18,7 @@ vulkanalia = { version = "0.35", features = ["libloading"] }
 thiserror = "2"
 sys-info = "0.9"
 bytemuck = "1.23"
+half = { version = "2.4", features = ["bytemuck"] }
 zero-pool = "0.8"
 onnx-extractor = "0.5"
 
