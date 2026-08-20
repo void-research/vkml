@@ -18,9 +18,8 @@ vulkanalia = { version = "0.35", features = ["libloading"] }
 thiserror = "2"
 sys-info = "0.9"
 bytemuck = "1.23"
-zero-pool = { git = "https://github.com/void-research/zero-pool" }
-onnx-extractor = { git = "https://github.com/void-research/onnx-extractor" }
-shader-slang = "0.1.0"
+zero-pool = "0.8"
+onnx-extractor = "0.5"
 
 #[dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }

@@ -14,7 +14,7 @@ use crate::tensor::TensorCell;
 use crate::tensor::{DeviceId, Tensor};
 use crate::utils::error::VKMLError;
 use crate::weight_initialiser::Initialiser;
-use onnx_extractor::OnnxModel;
+use onnx_extractor::Model;
 use zero_pool::global_pool;
 
 use crate::instruction::Instruction;
@@ -100,7 +100,7 @@ impl ComputeManager {
     ) -> Result<Self, VKMLError> {
         assert!(batch_size > 0, "batch_size must be greater than 0");
 
-        let onnx_model = OnnxModel::load_from_file(onnx_path).map_err(|e| {
+        let onnx_model = Model::load_from_file(onnx_path).map_err(|e| {
             VKMLError::OnnxImporter(format!(
                 "Failed to load ONNX model from '{}': {}",
                 onnx_path, e
