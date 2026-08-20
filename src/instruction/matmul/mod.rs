@@ -150,9 +150,9 @@ impl Instruction for MatMulInstruction {
         execute_gpu_matmul(
             gpu,
             command_buffer,
-            &src1_tensor,
-            &src2_tensor,
-            &dst_tensor,
+            src1_tensor,
+            src2_tensor,
+            dst_tensor,
             op_name,
         )
     }
