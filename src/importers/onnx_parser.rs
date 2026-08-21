@@ -423,7 +423,9 @@ fn initialiser_to_i64_vec(init: &Initialiser, op_name: &str) -> Result<Vec<i64>,
         )));
     }
     Ok(raw
-        .chunks_exact(8)
-        .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|chunk| i64::from_le_bytes(*chunk))
         .collect())
 }
