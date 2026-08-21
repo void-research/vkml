@@ -5,16 +5,16 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use vulkanalia::vk;
-use vulkanalia::vk::DeviceV1_0;
+use vulkanalia::vk::{self, DeviceV1_0};
 use zero_pool::global_pool;
 
+use crate::compute::compute_manager::ComputeManager;
+use crate::scheduler::execution_plan::ChunkId;
 use crate::tensor::DeviceId;
 use crate::tensor_graph::{OperationId, TensorId};
 use crate::utils::error::VKMLError;
-use crate::{compute::compute_manager::ComputeManager, scheduler::execution_plan::ChunkId};
 
-use super::execution_plan::ExecutionPlan;
+use super::execution_plan::{ExecutionChunk, ExecutionPlan};
 
 struct ExecutionState {
     plan: Arc<ExecutionPlan>,
@@ -26,16 +26,16 @@ struct ExecutionState {
 }
 
 impl ExecutionState {
-    fn new(plan: Arc<ExecutionPlan>, manager: &ComputeManager) -> Result<Arc<Self>, VKMLError> {
+    fn new(plan: Arc<ExecutionPlan>, manager: &ComputeManager) -> Arc<Self> {
         let chunk_dependencies_remaining = plan
             .chunks
             .iter()
-            .map(|chunk| AtomicUsize::new(chunk.initial_dep_count))
+            .map(|chunk| AtomicUsize::new(chunk.predecessors.len()))
             .collect();
 
         let outputs_remaining_init = plan.output_chunks.len();
 
-        let state = Arc::new_cyclic(move |weak_self| {
+        Arc::new_cyclic(move |weak_self| {
             let chunk_task_params = (0..plan.total_chunks())
                 .map(|chunk_id| ChunkTaskParams {
                     chunk_id,
@@ -51,9 +51,7 @@ impl ExecutionState {
                 main_thread: std::thread::current(),
                 chunk_task_params,
             }
-        });
-
-        Ok(state)
+        })
     }
 
     fn submit_initial_chunks(&self) {
@@ -73,21 +71,19 @@ impl ExecutionState {
 
         match &chunk.device {
             DeviceId::Gpu(gpu_idx) => {
-                self.execute_gpu_chunk(chunk_id, *gpu_idx, compute_manager)?;
+                self.execute_gpu_chunk(chunk, *gpu_idx, compute_manager)?;
             }
             DeviceId::Cpu => {
-                self.execute_cpu_chunk(chunk_id, compute_manager)?;
+                self.execute_cpu_chunk(chunk, compute_manager);
             }
         }
 
-        if chunk.is_output {
-            self.mark_output_complete();
+        if chunk.is_output && self.outputs_remaining.fetch_sub(1, Ordering::Release) == 1 {
+            self.main_thread.unpark();
         }
 
         for &dependent in &chunk.dependents {
-            let previous =
-                self.chunk_dependencies_remaining[dependent].fetch_sub(1, Ordering::Release);
-            if previous == 1 {
+            if self.chunk_dependencies_remaining[dependent].fetch_sub(1, Ordering::Release) == 1 {
                 self.submit_chunk(dependent);
             }
         }
@@ -97,30 +93,19 @@ impl ExecutionState {
 
     fn execute_gpu_chunk(
         &self,
-        chunk_id: ChunkId,
+        chunk: &ExecutionChunk,
         gpu_idx: usize,
         compute_manager: &ComputeManager,
     ) -> Result<(), VKMLError> {
         let gpu = compute_manager.gpu_ref(gpu_idx);
-
-        let chunk = &self.plan.chunks[chunk_id];
-
         let command_buffer = chunk.command_buffer.get_or_init(|| {
             create_gpu_chunk_command_buffer(compute_manager, &chunk.operation_layers, gpu_idx)
                 .expect("Failed to create command buffer for GPU chunk")
         });
 
-        let command_buffers = std::slice::from_ref(command_buffer);
-        let fence = chunk.needs_host_wait_fence.as_ref().map(|lock| {
-            *lock.get_or_init(|| {
-                gpu.create_fence()
-                    .expect("Failed to create fence for GPU chunk")
-            })
-        });
+        gpu.submit_with_fence(&[*command_buffer], chunk.fence)?;
 
-        gpu.submit_with_fence(command_buffers, fence)?;
-
-        if let Some(fence_handle) = fence {
+        if let Some(fence_handle) = chunk.fence {
             // Block this worker until the GPU signals completion so dependents see consistent state.
             gpu.wait_and_reset_fence(fence_handle)?;
         }
@@ -128,31 +113,15 @@ impl ExecutionState {
         Ok(())
     }
 
-    fn execute_cpu_chunk(
-        &self,
-        chunk_id: ChunkId,
-        compute_manager: &ComputeManager,
-    ) -> Result<(), VKMLError> {
-        let chunk = &self.plan.chunks[chunk_id];
-
+    fn execute_cpu_chunk(&self, chunk: &ExecutionChunk, compute_manager: &ComputeManager) {
         for layer in &chunk.operation_layers {
             for &op_id in layer {
-                let instruction = compute_manager.tensor_graph.get_instruction_or_panic(op_id);
-                instruction.execute_cpu(compute_manager);
+                compute_manager
+                    .tensor_graph
+                    .get_instruction_or_panic(op_id)
+                    .execute_cpu(compute_manager);
             }
         }
-
-        Ok(())
-    }
-
-    fn mark_output_complete(&self) {
-        if self.outputs_remaining.fetch_sub(1, Ordering::Release) == 1 {
-            self.signal_completion();
-        }
-    }
-
-    fn signal_completion(&self) {
-        self.main_thread.unpark();
     }
 
     fn await_completion(&self) {
@@ -168,14 +137,10 @@ struct ChunkTaskParams {
 }
 
 fn chunk_execute_task(params: &ChunkTaskParams) {
-    let Some(state) = params.state.upgrade() else {
-        return;
-    };
-    let chunk_id = params.chunk_id;
-
-    if let Err(err) = state.execute_chunk(chunk_id) {
-        state.signal_completion();
-        panic!("execute_chunk failed: {err}");
+    if let Some(state) = params.state.upgrade() {
+        state
+            .execute_chunk(params.chunk_id)
+            .expect("execute_chunk failed");
     }
 }
 
@@ -183,7 +148,7 @@ pub fn execute_plan(
     compute_manager: &ComputeManager,
     plan: Arc<ExecutionPlan>,
 ) -> Result<(), VKMLError> {
-    let state = ExecutionState::new(plan, compute_manager)?;
+    let state = ExecutionState::new(plan, compute_manager);
 
     if state.plan.chunks.len() == 1 {
         return state.execute_chunk(0);
@@ -232,7 +197,7 @@ fn create_gpu_chunk_command_buffer(
             command_buffer_count: 1,
         };
 
-        let buffers = gpu
+        let command_buffer = gpu
             .get_device()
             .allocate_command_buffers(&alloc_info)
             .map_err(|err| {
@@ -240,20 +205,18 @@ fn create_gpu_chunk_command_buffer(
                     "Failed to allocate command buffer for chunk on GPU {}: {}",
                     gpu_idx, err
                 ))
+            })?
+            .pop()
+            .ok_or_else(|| {
+                VKMLError::Gpu(format!(
+                    "No command buffer returned for chunk on GPU {gpu_idx}"
+                ))
             })?;
-
-        let command_buffer = buffers.into_iter().next().ok_or_else(|| {
-            VKMLError::Gpu(format!(
-                "No command buffer returned for chunk on GPU {}",
-                gpu_idx
-            ))
-        })?;
 
         gpu.begin_command_buffer(command_buffer, vk::CommandBufferUsageFlags::empty())
             .map_err(|err| {
                 VKMLError::Gpu(format!(
-                    "Failed to begin command buffer for GPU {}: {}",
-                    gpu_idx, err
+                    "Failed to begin command buffer for GPU {gpu_idx}: {err}"
                 ))
             })?;
 
@@ -261,16 +224,12 @@ fn create_gpu_chunk_command_buffer(
         for (layer_idx, layer) in operation_layers.iter().enumerate() {
             for &op_id in layer {
                 let instruction = compute_manager.tensor_graph.get_instruction_or_panic(op_id);
-
                 let op_opt = instruction.pick_gpu_operation(compute_manager)?;
 
                 instruction
                     .record_into_command_buffer(&gpu, command_buffer, compute_manager, op_opt)
                     .map_err(|err| {
-                        VKMLError::Gpu(format!(
-                            "Failed to record commands for op {}: {}",
-                            op_id, err
-                        ))
+                        VKMLError::Gpu(format!("Failed to record commands for op {op_id}: {err}"))
                     })?;
             }
 
@@ -295,31 +254,28 @@ fn create_gpu_chunk_command_buffer(
                     }
 
                     let tensor = compute_manager.tensor_read(tensor_id);
-                    match tensor.device() {
-                        DeviceId::Gpu(owner_idx) if owner_idx == gpu_idx => {
-                            let memory = tensor.get_gpu_memory_or_panic();
-                            buffer_barriers.push(vk::BufferMemoryBarrier2 {
-                                s_type: vk::StructureType::BUFFER_MEMORY_BARRIER_2,
-                                next: std::ptr::null(),
-                                src_stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
-                                src_access_mask: vk::AccessFlags2::SHADER_WRITE,
-                                dst_stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
-                                dst_access_mask: dst_access,
-                                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                buffer: memory.buffer,
-                                offset: 0,
-                                size: memory.size,
-                            });
-                            hazard_ids.push(tensor_id);
-                        }
-                        _ => {
-                            panic!(
-                                "Tensor {} referenced while recording GPU chunk for device {} is not backed by that GPU",
-                                tensor_id, gpu_idx
-                            );
-                        }
+
+                    if tensor.device() != DeviceId::Gpu(gpu_idx) {
+                        return Err(VKMLError::Gpu(format!(
+                            "Tensor {tensor_id} referenced while recording GPU chunk for device {gpu_idx} is not backed by that GPU"
+                        )));
                     }
+
+                    let memory = tensor.get_gpu_memory_or_panic();
+                    buffer_barriers.push(vk::BufferMemoryBarrier2 {
+                        s_type: vk::StructureType::BUFFER_MEMORY_BARRIER_2,
+                        next: std::ptr::null(),
+                        src_stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
+                        src_access_mask: vk::AccessFlags2::SHADER_WRITE,
+                        dst_stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
+                        dst_access_mask: dst_access,
+                        src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                        dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                        buffer: memory.buffer,
+                        offset: 0,
+                        size: memory.size,
+                    });
+                    hazard_ids.push(tensor_id);
                 }
 
                 if !buffer_barriers.is_empty() {
@@ -334,8 +290,7 @@ fn create_gpu_chunk_command_buffer(
 
         gpu.end_command_buffer(command_buffer).map_err(|err| {
             VKMLError::Gpu(format!(
-                "Failed to end command buffer for GPU {}: {}",
-                gpu_idx, err
+                "Failed to end command buffer for GPU {gpu_idx}: {err}"
             ))
         })?;
 

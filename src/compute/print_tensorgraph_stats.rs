@@ -46,9 +46,9 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
         );
         println!(
             "  initial_dep_count={} is_output={} needs_host_wait_fence={}",
-            chunk.initial_dep_count,
+            chunk.predecessors.len(),
             chunk.is_output,
-            chunk.needs_host_wait_fence.is_some()
+            chunk.fence.is_some()
         );
         println!("{:-<100}", "");
 
