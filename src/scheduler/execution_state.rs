@@ -185,6 +185,10 @@ pub fn execute_plan(
 ) -> Result<(), VKMLError> {
     let state = ExecutionState::new(plan, compute_manager)?;
 
+    if state.plan.chunks.len() == 1 {
+        return state.execute_chunk(0);
+    }
+
     state.submit_initial_chunks();
     state.await_completion();
 
