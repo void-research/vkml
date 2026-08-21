@@ -447,9 +447,11 @@ impl ComputeManager {
         // Now actually allocate the tensors using the final host-visibility map.
         self.allocate_tensors(tensor_locations, initialisers, &host_visible_plan);
 
-        // Cache the dependency graph (recompute after we've modified operations)
+        // Cache the dependency graph and pre-compile the execution plan
         let new_dep_graph = self.tensor_graph.dependency_graph();
         self.cached_dependency_graph = Some(new_dep_graph);
+        let plan = create_execution_plan(self)?;
+        self.cached_plan = Some(Arc::new(plan));
 
         Ok(())
     }
@@ -603,18 +605,17 @@ impl ComputeManager {
     }
 
     pub fn execute(&mut self) -> Result<(), VKMLError> {
-        match &self.cached_plan {
-            Some(existing) => {
-                let arc_plan = Arc::clone(existing);
-                execute_plan(self, arc_plan)
-            }
+        let plan = match &self.cached_plan {
+            Some(existing) => Arc::clone(existing),
             None => {
                 let plan = create_execution_plan(self)?;
                 let arc_plan = Arc::new(plan);
-                self.cached_plan = Some(Arc::clone(&arc_plan));
-                execute_plan(self, arc_plan)
+                self.cached_plan = Some(arc_plan.clone());
+                arc_plan
             }
-        }
+        };
+
+        execute_plan(self, plan)
     }
 
     pub(crate) fn gpu_count(&self) -> usize {
