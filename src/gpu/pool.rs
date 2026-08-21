@@ -120,12 +120,10 @@ impl GpuPool {
                 gpus
             };
 
-            let gpus = Self {
+            Ok(Self {
                 gpus: init_gpus,
                 _entry: entry,
-            };
-
-            Ok(gpus)
+            })
         }
     }
 
