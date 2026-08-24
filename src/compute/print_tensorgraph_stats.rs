@@ -1,5 +1,7 @@
 use crate::{
-    compute::compute_manager::ComputeManager, scheduler::create_execution_plan, tensor::DeviceId,
+    compute::compute_manager::ComputeManager,
+    scheduler::{create_execution_plan, execution_plan::Executor},
+    tensor::DeviceId,
     tensor_graph::TensorId,
 };
 use std::collections::HashSet;
@@ -32,9 +34,9 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
     }
 
     for (chunk_idx, chunk) in plan.chunks.iter().enumerate() {
-        let device_str = match &chunk.device {
-            DeviceId::Cpu => "CPU".to_string(),
-            DeviceId::Gpu(g) => format!("GPU {}", g),
+        let (device_str, has_fence) = match &chunk.execution {
+            Executor::Cpu => ("CPU".to_string(), false),
+            Executor::Gpu { gpu_idx, fence, .. } => (format!("GPU {gpu_idx}"), fence.is_some()),
         };
 
         let total_ops: usize = chunk.operation_layers.iter().map(|layer| layer.len()).sum();
@@ -48,7 +50,7 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
             "  initial_dep_count={} is_output={} needs_host_wait_fence={}",
             chunk.predecessors.len(),
             chunk.is_output,
-            chunk.fence.is_some()
+            has_fence
         );
         println!("{:-<100}", "");
 

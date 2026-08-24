@@ -1,22 +1,28 @@
 use std::collections::HashSet;
-use std::sync::OnceLock;
-use vulkanalia::vk;
+use vulkanalia::vk::{self, DeviceV1_0};
 
 use crate::compute::compute_manager::ComputeManager;
 use crate::tensor::DeviceId;
-use crate::tensor_graph::OperationId;
+use crate::tensor_graph::{OperationId, TensorId};
 use crate::utils::error::VKMLError;
 
 pub type ChunkId = usize;
 
+pub enum Executor {
+    Cpu,
+    Gpu {
+        gpu_idx: usize,
+        command_buffer: vk::CommandBuffer,
+        fence: Option<vk::Fence>,
+    },
+}
+
 pub struct ExecutionChunk {
-    pub device: DeviceId,
+    pub execution: Executor,
     pub operation_layers: Vec<Vec<OperationId>>,
     pub predecessors: Vec<ChunkId>,
     pub dependents: Vec<ChunkId>,
     pub is_output: bool,
-    pub fence: Option<vk::Fence>,
-    pub command_buffer: OnceLock<vk::CommandBuffer>,
 }
 
 pub struct ExecutionPlan {
@@ -154,7 +160,7 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
         output_chunks = (0..chunk_count).collect();
     }
 
-    // 4. Assemble execution chunks with operation layers and host-wait fences
+    // 4. Assemble execution chunks with operation layers, fences, and pre-recorded command buffers
     let mut chunks = Vec::with_capacity(chunk_count);
     for (chunk_idx, (predecessors, dependents)) in chunk_predecessors
         .into_iter()
@@ -170,7 +176,7 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
             op_count,
         );
 
-        let fence = match device {
+        let execution = match device {
             DeviceId::Gpu(gpu_idx) => {
                 let needs_fence = is_output
                     || dependents.iter().any(|&dep| match chunk_devices[dep] {
@@ -178,23 +184,30 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
                         DeviceId::Cpu => true,
                     });
 
-                if needs_fence {
+                let fence = if needs_fence {
                     Some(compute_manager.gpu_ref(gpu_idx).create_fence()?)
                 } else {
                     None
+                };
+
+                let command_buffer =
+                    create_gpu_chunk_command_buffer(compute_manager, &operation_layers, gpu_idx)?;
+
+                Executor::Gpu {
+                    gpu_idx,
+                    command_buffer,
+                    fence,
                 }
             }
-            DeviceId::Cpu => None,
+            DeviceId::Cpu => Executor::Cpu,
         };
 
         chunks.push(ExecutionChunk {
-            device,
+            execution,
             operation_layers,
             predecessors,
             dependents,
             is_output,
-            fence,
-            command_buffer: OnceLock::new(),
         });
     }
 
@@ -203,6 +216,144 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
         output_chunks,
         root_chunks,
     })
+}
+
+fn create_gpu_chunk_command_buffer(
+    compute_manager: &ComputeManager,
+    operation_layers: &[Vec<OperationId>],
+    gpu_idx: usize,
+) -> Result<vk::CommandBuffer, VKMLError> {
+    let gpu = compute_manager.gpu_ref(gpu_idx);
+
+    let mut layer_reads = Vec::with_capacity(operation_layers.len());
+    let mut layer_writes = Vec::with_capacity(operation_layers.len());
+
+    for layer in operation_layers {
+        let mut reads = HashSet::new();
+        let mut writes = HashSet::new();
+        for &op_id in layer {
+            let instruction = compute_manager.tensor_graph.get_instruction_or_panic(op_id);
+            for tid in instruction.get_input_tensor_ids() {
+                reads.insert(tid);
+            }
+            for tid in instruction.get_output_tensor_ids() {
+                writes.insert(tid);
+            }
+        }
+        layer_reads.push(reads);
+        layer_writes.push(writes);
+    }
+
+    let mut pending_writes: HashSet<TensorId> = HashSet::new();
+
+    unsafe {
+        let alloc_info = vk::CommandBufferAllocateInfo {
+            s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
+            next: std::ptr::null(),
+            command_pool: gpu.get_command_pool(),
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_buffer_count: 1,
+        };
+
+        let command_buffer = gpu
+            .get_device()
+            .allocate_command_buffers(&alloc_info)
+            .map_err(|err| {
+                VKMLError::Gpu(format!(
+                    "Failed to allocate command buffer for chunk on GPU {}: {}",
+                    gpu_idx, err
+                ))
+            })?
+            .pop()
+            .ok_or_else(|| {
+                VKMLError::Gpu(format!(
+                    "No command buffer returned for chunk on GPU {gpu_idx}"
+                ))
+            })?;
+
+        gpu.begin_command_buffer(command_buffer, vk::CommandBufferUsageFlags::empty())
+            .map_err(|err| {
+                VKMLError::Gpu(format!(
+                    "Failed to begin command buffer for GPU {gpu_idx}: {err}"
+                ))
+            })?;
+
+        // Record operations layer by layer with barriers between layers
+        for (layer_idx, layer) in operation_layers.iter().enumerate() {
+            for &op_id in layer {
+                let instruction = compute_manager.tensor_graph.get_instruction_or_panic(op_id);
+                let op_opt = instruction.pick_gpu_operation(compute_manager)?;
+
+                instruction
+                    .record_into_command_buffer(&gpu, command_buffer, compute_manager, op_opt)
+                    .map_err(|err| {
+                        VKMLError::Gpu(format!("Failed to record commands for op {op_id}: {err}"))
+                    })?;
+            }
+
+            pending_writes.extend(layer_writes[layer_idx].iter().copied());
+
+            // Insert barrier between layers (but not after the last layer)
+            if layer_idx < operation_layers.len() - 1 {
+                let mut buffer_barriers = Vec::new();
+                let mut hazard_ids = Vec::new();
+
+                for &tensor_id in &pending_writes {
+                    let mut dst_access = vk::AccessFlags2::empty();
+                    if layer_reads[layer_idx + 1].contains(&tensor_id) {
+                        dst_access |= vk::AccessFlags2::SHADER_READ;
+                    }
+                    if layer_writes[layer_idx + 1].contains(&tensor_id) {
+                        dst_access |= vk::AccessFlags2::SHADER_WRITE;
+                    }
+
+                    if dst_access.is_empty() {
+                        continue;
+                    }
+
+                    let tensor = compute_manager.tensor_read(tensor_id);
+
+                    if tensor.device() != DeviceId::Gpu(gpu_idx) {
+                        return Err(VKMLError::Gpu(format!(
+                            "Tensor {tensor_id} referenced while recording GPU chunk for device {gpu_idx} is not backed by that GPU"
+                        )));
+                    }
+
+                    let memory = tensor.get_gpu_memory_or_panic();
+                    buffer_barriers.push(vk::BufferMemoryBarrier2 {
+                        s_type: vk::StructureType::BUFFER_MEMORY_BARRIER_2,
+                        next: std::ptr::null(),
+                        src_stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
+                        src_access_mask: vk::AccessFlags2::SHADER_WRITE,
+                        dst_stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
+                        dst_access_mask: dst_access,
+                        src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                        dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                        buffer: memory.buffer,
+                        offset: 0,
+                        size: memory.size,
+                    });
+                    hazard_ids.push(tensor_id);
+                }
+
+                if !buffer_barriers.is_empty() {
+                    gpu.barrier_compute_shader_access(command_buffer, &buffer_barriers);
+
+                    for tensor_id in hazard_ids {
+                        pending_writes.remove(&tensor_id);
+                    }
+                }
+            }
+        }
+
+        gpu.end_command_buffer(command_buffer).map_err(|err| {
+            VKMLError::Gpu(format!(
+                "Failed to end command buffer for GPU {gpu_idx}: {err}"
+            ))
+        })?;
+
+        Ok(command_buffer)
+    }
 }
 
 fn organise_chunk_into_layers(
