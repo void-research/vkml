@@ -12,7 +12,7 @@ use vulkanalia::{
 
 use crate::{
     compute::memory_tracker::MemoryTracker, gpu::workgroup::optimal_workgroup_size,
-    instruction::GPUOperation, slang::compiler as slang_compiler, utils::error::VKMLError,
+    instruction::GPUOperation, slang::SlangCompiler, utils::error::VKMLError,
 };
 
 use super::VkExtensions;
@@ -45,12 +45,14 @@ pub struct Gpu {
     command_pool: vk::CommandPool,
     device: Arc<Device>,
     instance: Arc<Instance>,
+    slang: Arc<SlangCompiler>,
 }
 
 impl Gpu {
     pub fn new_shared(
         instance: Arc<Instance>,
         physical_device: vk::PhysicalDevice,
+        slang: Arc<SlangCompiler>,
     ) -> Result<Self, VKMLError> {
         unsafe {
             let queue_families =
@@ -250,6 +252,7 @@ impl Gpu {
                 command_pool,
                 device,
                 instance,
+                slang,
             })
         }
     }
@@ -443,7 +446,9 @@ impl Gpu {
             return pipeline;
         }
 
-        let compiled_blob = slang_compiler::compile(op, dtype)
+        let compiled_blob = self
+            .slang
+            .compile(op, dtype)
             .unwrap_or_else(|e| panic!("Slang compilation failed for {:?}: {}", op, e));
 
         let pipeline = self

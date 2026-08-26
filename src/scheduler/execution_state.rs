@@ -1,8 +1,5 @@
 use std::ptr::NonNull;
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use zero_pool::global_pool;
 
@@ -12,8 +9,8 @@ use crate::utils::error::VKMLError;
 
 use super::execution_plan::{ExecutionChunk, ExecutionPlan, Executor};
 
-struct ExecutionState {
-    plan: Arc<ExecutionPlan>,
+struct ExecutionState<'a> {
+    plan: &'a ExecutionPlan,
     compute_manager: NonNull<ComputeManager>,
     chunk_dependencies_remaining: Box<[AtomicUsize]>,
     outputs_remaining: AtomicUsize,
@@ -21,8 +18,8 @@ struct ExecutionState {
     chunk_task_params: Box<[ChunkTaskParams]>,
 }
 
-impl ExecutionState {
-    fn new(plan: Arc<ExecutionPlan>, manager: &ComputeManager) -> Arc<Self> {
+impl<'a> ExecutionState<'a> {
+    fn new(plan: &'a ExecutionPlan, manager: &ComputeManager) -> Box<Self> {
         let chunk_dependencies_remaining = plan
             .chunks
             .iter()
@@ -31,23 +28,24 @@ impl ExecutionState {
 
         let outputs_remaining_init = plan.output_chunks.len();
 
-        Arc::new_cyclic(move |weak_self| {
-            let chunk_task_params = (0..plan.total_chunks())
-                .map(|chunk_id| ChunkTaskParams {
-                    chunk_id,
-                    state: weak_self.clone(),
-                })
-                .collect();
+        let mut state = Box::new(ExecutionState {
+            plan,
+            compute_manager: NonNull::from(manager),
+            chunk_dependencies_remaining,
+            outputs_remaining: AtomicUsize::new(outputs_remaining_init),
+            main_thread: std::thread::current(),
+            chunk_task_params: Box::new([]),
+        });
 
-            ExecutionState {
-                plan,
-                compute_manager: NonNull::from(manager),
-                chunk_dependencies_remaining,
-                outputs_remaining: AtomicUsize::new(outputs_remaining_init),
-                main_thread: std::thread::current(),
-                chunk_task_params,
-            }
-        })
+        let state_ptr = NonNull::from(&*state).cast::<ExecutionState<'static>>();
+        state.chunk_task_params = (0..plan.total_chunks())
+            .map(|chunk_id| ChunkTaskParams {
+                chunk_id,
+                state: state_ptr,
+            })
+            .collect();
+
+        state
     }
 
     fn submit_initial_chunks(&self) {
@@ -117,20 +115,19 @@ impl ExecutionState {
 
 struct ChunkTaskParams {
     chunk_id: ChunkId,
-    state: Weak<ExecutionState>,
+    state: NonNull<ExecutionState<'static>>,
 }
 
 fn chunk_execute_task(params: &ChunkTaskParams) {
-    if let Some(state) = params.state.upgrade() {
-        state
-            .execute_chunk(params.chunk_id)
-            .expect("execute_chunk failed");
-    }
+    let state = unsafe { params.state.as_ref() };
+    state
+        .execute_chunk(params.chunk_id)
+        .expect("execute_chunk failed");
 }
 
 pub fn execute_plan(
     compute_manager: &ComputeManager,
-    plan: Arc<ExecutionPlan>,
+    plan: &ExecutionPlan,
 ) -> Result<(), VKMLError> {
     let state = ExecutionState::new(plan, compute_manager);
 

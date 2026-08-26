@@ -7,10 +7,11 @@ use vulkanalia::{
 };
 use zero_pool::global_pool;
 
-use crate::{VKMLError, gpu::vk_gpu::Gpu};
+use crate::{VKMLError, gpu::vk_gpu::Gpu, slang::SlangCompiler};
 
 pub struct GpuPool {
     gpus: Vec<Arc<Gpu>>,
+    slang: Arc<SlangCompiler>,
     _entry: Entry,
 }
 
@@ -44,6 +45,7 @@ impl GpuPool {
             };
 
             let instance = Arc::new(entry.create_instance(&create_info, None)?);
+            let slang = Arc::new(SlangCompiler::new()?);
 
             let physical_devices = instance.enumerate_physical_devices()?;
 
@@ -80,6 +82,7 @@ impl GpuPool {
                     .map(|(i, &idx)| GpuInitParams {
                         instance: instance.clone(),
                         physical_device: physical_devices[idx],
+                        slang: slang.clone(),
                         index: i,
                         out_ptr: gpus.as_mut_ptr(),
                     })
@@ -100,6 +103,7 @@ impl GpuPool {
                     .map(|(i, &physical_device)| GpuInitParams {
                         instance: instance.clone(),
                         physical_device,
+                        slang: slang.clone(),
                         index: i,
                         out_ptr: gpus.as_mut_ptr(),
                     })
@@ -122,6 +126,7 @@ impl GpuPool {
 
             Ok(Self {
                 gpus: init_gpus,
+                slang,
                 _entry: entry,
             })
         }
@@ -136,6 +141,17 @@ impl GpuPool {
             .get(idx)
             .cloned()
             .unwrap_or_else(|| panic!("Requested GPU index {idx} out of range"))
+    }
+
+    pub fn get_gpu_ref(&self, idx: usize) -> &Gpu {
+        self.gpus()
+            .get(idx)
+            .map(|g| g.as_ref())
+            .unwrap_or_else(|| panic!("Requested GPU index {idx} out of range"))
+    }
+
+    pub fn slang(&self) -> &SlangCompiler {
+        &self.slang
     }
 }
 
@@ -188,14 +204,19 @@ impl std::fmt::Debug for GpuPool {
 struct GpuInitParams {
     instance: Arc<Instance>,
     physical_device: vk::PhysicalDevice,
+    slang: Arc<SlangCompiler>,
     index: usize,
     out_ptr: *mut Arc<Gpu>,
 }
 
 fn gpu_init_task(params: &GpuInitParams) {
     let gpu = Arc::new(
-        Gpu::new_shared(params.instance.clone(), params.physical_device)
-            .expect("Failed to initialise GPU"),
+        Gpu::new_shared(
+            params.instance.clone(),
+            params.physical_device,
+            params.slang.clone(),
+        )
+        .expect("Failed to initialise GPU"),
     );
 
     unsafe {

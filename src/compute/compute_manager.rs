@@ -1,5 +1,4 @@
 use std::ptr::NonNull;
-use std::sync::Arc;
 use std::{mem, ptr};
 
 use crate::compute::{print_model_stats, print_tensorgraph_stats};
@@ -10,6 +9,7 @@ use crate::gpu::{
 use crate::instruction;
 use crate::onnx_parser::parse_onnx_model;
 use crate::scheduler::{ExecutionPlan, create_execution_plan, execute_plan};
+use crate::slang::SlangCompiler;
 use crate::tensor::TensorCell;
 use crate::tensor::{DeviceId, Tensor};
 use crate::utils::error::VKMLError;
@@ -36,7 +36,7 @@ pub struct ComputeManager {
     gpus: GpuPool,
     cpu: CPUCompute,
 
-    cached_plan: Option<Arc<ExecutionPlan>>,
+    cached_plan: Option<ExecutionPlan>,
     cached_dependency_graph: Option<DependencyGraph>,
 
     optimisations: Optimisations,
@@ -451,7 +451,7 @@ impl ComputeManager {
         let new_dep_graph = self.tensor_graph.dependency_graph();
         self.cached_dependency_graph = Some(new_dep_graph);
         let plan = create_execution_plan(self)?;
-        self.cached_plan = Some(Arc::new(plan));
+        self.cached_plan = Some(plan);
 
         Ok(())
     }
@@ -605,25 +605,25 @@ impl ComputeManager {
     }
 
     pub fn execute(&mut self) -> Result<(), VKMLError> {
-        let plan = match &self.cached_plan {
-            Some(existing) => Arc::clone(existing),
-            None => {
-                let plan = create_execution_plan(self)?;
-                let arc_plan = Arc::new(plan);
-                self.cached_plan = Some(arc_plan.clone());
-                arc_plan
-            }
-        };
+        if self.cached_plan.is_none() {
+            let plan = create_execution_plan(self)?;
+            self.cached_plan = Some(plan);
+        }
+        let plan = self.cached_plan.as_ref().unwrap();
 
         execute_plan(self, plan)
+    }
+
+    pub fn slang(&self) -> &SlangCompiler {
+        self.gpus.slang()
     }
 
     pub(crate) fn gpu_count(&self) -> usize {
         self.gpus.gpus().len()
     }
 
-    pub(crate) fn gpu_ref(&self, idx: usize) -> Arc<Gpu> {
-        self.gpus.get_gpu(idx)
+    pub(crate) fn gpu_ref(&self, idx: usize) -> &Gpu {
+        self.gpus.get_gpu_ref(idx)
     }
 
     pub(crate) fn dependency_graph(&self) -> &DependencyGraph {
