@@ -57,7 +57,7 @@ impl<'a> ExecutionState<'a> {
 
     fn submit_chunk(&self, chunk_id: ChunkId) {
         let params = &self.chunk_task_params[chunk_id];
-        global_pool().submit_task(chunk_execute_task, params);
+        unsafe { global_pool().run_detached(chunk_execute_task, std::slice::from_ref(params)) };
     }
 
     fn execute_chunk(&self, chunk_id: ChunkId) -> Result<(), VKMLError> {

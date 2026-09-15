@@ -26,7 +26,7 @@ vulkanalia = { version = "0.35", features = ["libloading"] }
 thiserror = "2"
 sys-info = "0.9"
 bytemuck = "1"
-zero-pool = "0.8"
+zero-pool = "0.9"
 onnx-extractor = "0.5"
 shader-slang-sys = "0.1"
 

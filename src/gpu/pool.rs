@@ -88,7 +88,7 @@ impl GpuPool {
                     })
                     .collect();
 
-                global_pool().submit_batch(gpu_init_task, &tasks).wait();
+                global_pool().run(gpu_init_task, &tasks);
 
                 gpus.set_len(validated_indices.len());
 
@@ -109,7 +109,7 @@ impl GpuPool {
                     })
                     .collect();
 
-                global_pool().submit_batch(gpu_init_task, &tasks).wait();
+                global_pool().run(gpu_init_task, &tasks);
 
                 gpus.set_len(count);
 
