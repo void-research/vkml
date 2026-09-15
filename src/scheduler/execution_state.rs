@@ -1,5 +1,6 @@
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 use zero_pool::global_pool;
 
@@ -14,7 +15,7 @@ struct ExecutionState<'a> {
     compute_manager: NonNull<ComputeManager>,
     chunk_dependencies_remaining: Box<[AtomicUsize]>,
     outputs_remaining: AtomicUsize,
-    main_thread: std::thread::Thread,
+    main_thread: thread::Thread,
     chunk_task_params: Box<[ChunkTaskParams]>,
 }
 
@@ -33,7 +34,7 @@ impl<'a> ExecutionState<'a> {
             compute_manager: NonNull::from(manager),
             chunk_dependencies_remaining,
             outputs_remaining: AtomicUsize::new(outputs_remaining_init),
-            main_thread: std::thread::current(),
+            main_thread: thread::current(),
             chunk_task_params: Box::new([]),
         });
 
@@ -108,7 +109,7 @@ impl<'a> ExecutionState<'a> {
 
     fn await_completion(&self) {
         while self.outputs_remaining.load(Ordering::Acquire) != 0 {
-            std::thread::park();
+            thread::park();
         }
     }
 }
