@@ -41,7 +41,7 @@ void main<T : IArithmetic>(
 
     if (WORKGROUP_SIZE_Y > 1)
     {
-        static groupshared T sdata[1024];
+        static groupshared T sdata[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
         uint shmem_idx = threadId.x * WORKGROUP_SIZE_Y + tid;
         sdata[shmem_idx] = sum;
         GroupMemoryBarrierWithGroupSync();
