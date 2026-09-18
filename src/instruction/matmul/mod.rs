@@ -82,10 +82,19 @@ impl Instruction for MatMulInstruction {
             dst_dtype,
         )?;
 
-        // If it's MatMul_2D2D, check for tiled variants
+        // If it's MatMul_2D2D, check for vector or tiled variants
         if operation == GPUOperation::MatMul_2D2D {
             let m = src1_tensor.desc().dims()[0] as u64;
             let n = src2_tensor.desc().dims()[1] as u64;
+
+            // Batch size 1 / vector x matrix: use generic 1D GEMV shaders
+            if m == 1 {
+                return Ok(Some(GPUOperation::MatMul_1D2D));
+            }
+            if n == 1 {
+                return Ok(Some(GPUOperation::MatMul_2D1D));
+            }
+
             let gpu = cm.gpu_ref(0);
             let max_shmem = gpu.max_shared_memory_size();
 
@@ -131,10 +140,19 @@ impl Instruction for MatMulInstruction {
         op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
         let op_name = match op {
-            Some(GPUOperation::MatMul_2D2D) => GPUOperation::MatMul_2D2D,
-            Some(GPUOperation::MatMul_2D2D_Tiled_8x8) => GPUOperation::MatMul_2D2D_Tiled_8x8,
-            Some(GPUOperation::MatMul_2D2D_Tiled_16x16) => GPUOperation::MatMul_2D2D_Tiled_16x16,
-            Some(GPUOperation::MatMul_2D2D_Tiled_32x32) => GPUOperation::MatMul_2D2D_Tiled_32x32,
+            Some(
+                op @ (GPUOperation::MatMul_1D2D
+                | GPUOperation::MatMul_2D1D
+                | GPUOperation::MatMul_2D2D
+                | GPUOperation::MatMul_2D3D
+                | GPUOperation::MatMul_3D2D
+                | GPUOperation::MatMul_3D3D
+                | GPUOperation::MatMul_3D1D
+                | GPUOperation::MatMul_1D3D
+                | GPUOperation::MatMul_2D2D_Tiled_8x8
+                | GPUOperation::MatMul_2D2D_Tiled_16x16
+                | GPUOperation::MatMul_2D2D_Tiled_32x32),
+            ) => op,
             _ => {
                 return Err(VKMLError::Instruction(format!(
                     "Invalid GPUOperation {:?} for MatMul",
@@ -272,28 +290,38 @@ fn execute_gpu_matmul(
     // Pass actual output dimensions to optimal_workgroup_size_* and dispatch
     let (local_size, push_constants_bytes, work_size) = match operation {
         GPUOperation::MatMul_1D2D => {
-            // [k] × [k,n] → [n]
-            let k = src1_dims[0];
+            // [1, k] or [k] × [k, n] → [1, n] or [n]
+            let k = *src1_dims.last().unwrap();
             let n = src2_dims[1];
 
             let pc = MatMul1D2DPushConstants {
                 k: k as u32,
                 n: n as u32,
-                stride_a: src1_strides[0] as u32,
+                stride_a: *src1_strides.last().unwrap() as u32,
                 stride_b0: src2_strides[0] as u32,
                 stride_b1: src2_strides[1] as u32,
-                stride_c: dst_strides[0] as u32,
+                stride_c: *dst_strides.last().unwrap() as u32,
             };
 
-            (
-                gpu.optimal_workgroup_size_1d(n as u64),
-                as_bytes(&pc).to_vec(),
-                [n as u64, 1, 1],
-            )
+            if n >= 64 {
+                // Wide output: 1 thread per column, 256 columns per workgroup
+                (
+                    [256, 1, 1],
+                    as_bytes(&pc).to_vec(),
+                    [n as u64, 1, 1],
+                )
+            } else {
+                // Narrow output: 1 column per workgroup, 256 reduction threads along K
+                (
+                    [1, 256, 1],
+                    as_bytes(&pc).to_vec(),
+                    [n as u64, 256, 1],
+                )
+            }
         }
 
         GPUOperation::MatMul_2D1D => {
-            // [m,k] × [k] → [m]
+            // [m, k] × [k, 1] or [k] → [m, 1] or [m]
             let m = src1_dims[0];
             let k = src1_dims[1];
 
@@ -302,15 +330,25 @@ fn execute_gpu_matmul(
                 k: k as u32,
                 stride_a0: src1_strides[0] as u32,
                 stride_a1: src1_strides[1] as u32,
-                stride_b: src2_strides[0] as u32,
-                stride_c: dst_strides[0] as u32,
+                stride_b: *src2_strides.last().unwrap() as u32,
+                stride_c: *dst_strides.last().unwrap() as u32,
             };
 
-            (
-                gpu.optimal_workgroup_size_1d(m as u64),
-                as_bytes(&pc).to_vec(),
-                [m as u64, 1, 1],
-            )
+            if m >= 64 {
+                // Wide output: 1 thread per row, 256 rows per workgroup
+                (
+                    [256, 1, 1],
+                    as_bytes(&pc).to_vec(),
+                    [m as u64, 1, 1],
+                )
+            } else {
+                // Narrow output: 1 row per workgroup, 256 reduction threads along K
+                (
+                    [1, 256, 1],
+                    as_bytes(&pc).to_vec(),
+                    [m as u64, 256, 1],
+                )
+            }
         }
 
         GPUOperation::MatMul_2D2D
@@ -338,7 +376,7 @@ fn execute_gpu_matmul(
                 GPUOperation::MatMul_2D2D_Tiled_8x8 => [8, 8, 1],
                 GPUOperation::MatMul_2D2D_Tiled_16x16 => [16, 16, 1],
                 GPUOperation::MatMul_2D2D_Tiled_32x32 => [32, 32, 1],
-                _ => gpu.optimal_workgroup_size_2d(m as u64, n as u64),
+                _ => gpu.optimal_workgroup_size_2d(n as u64, m as u64),
             };
 
             (local_size, as_bytes(&pc).to_vec(), [n as u64, m as u64, 1])

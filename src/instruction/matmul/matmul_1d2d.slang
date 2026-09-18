@@ -24,24 +24,44 @@ void main<T : IArithmetic>(
     StructuredBuffer<T> src1,
     StructuredBuffer<T> src2,
     RWStructuredBuffer<T> dst,
-    uint3 threadId: SV_DispatchThreadID)
+    uint3 groupId: SV_GroupID,
+    uint3 threadId: SV_GroupThreadID)
 {
-    uint col = threadId.x;
+    uint col = groupId.x * WORKGROUP_SIZE_X + threadId.x;
+    uint tid = threadId.y;
 
-    if (col >= pc.n)
-    {
-        return;
-    }
+    if (col >= pc.n) return;
 
     T sum = T(0);
 
-    for (uint i = 0; i < pc.k; i++)
+    for (uint i = tid; i < pc.k; i += WORKGROUP_SIZE_Y)
     {
-        uint a_idx = i * pc.stride_a;
-        uint b_idx = i * pc.stride_b0 + col * pc.stride_b1;
-        sum = sum + src1[a_idx] * src2[b_idx];
+        sum = sum + src1[i * pc.stride_a] * src2[i * pc.stride_b0 + col * pc.stride_b1];
     }
 
-    uint c_idx = col * pc.stride_c;
-    dst[c_idx] = sum;
+    if (WORKGROUP_SIZE_Y > 1)
+    {
+        static groupshared T sdata[1024];
+        uint shmem_idx = threadId.x * WORKGROUP_SIZE_Y + tid;
+        sdata[shmem_idx] = sum;
+        GroupMemoryBarrierWithGroupSync();
+
+        for (uint s = WORKGROUP_SIZE_Y / 2; s > 0; s >>= 1)
+        {
+            if (tid < s)
+            {
+                sdata[shmem_idx] = sdata[shmem_idx] + sdata[shmem_idx + s];
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        if (tid == 0)
+        {
+            dst[col * pc.stride_c] = sdata[shmem_idx];
+        }
+    }
+    else
+    {
+        dst[col * pc.stride_c] = sum;
+    }
 }
