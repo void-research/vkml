@@ -9,7 +9,6 @@ use crate::gpu::{
 use crate::instruction;
 use crate::onnx_parser::parse_onnx_model;
 use crate::scheduler::{ExecutionPlan, create_execution_plan, execute_plan};
-use crate::slang::SlangCompiler;
 use crate::tensor::TensorCell;
 use crate::tensor::{DeviceId, Tensor};
 use crate::utils::error::VKMLError;
@@ -608,10 +607,6 @@ impl ComputeManager {
         let plan = self.cached_plan.as_ref().unwrap();
 
         execute_plan(self, plan)
-    }
-
-    pub fn slang(&self) -> &SlangCompiler {
-        self.gpus.slang()
     }
 
     pub(crate) fn gpu_count(&self) -> usize {

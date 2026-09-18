@@ -11,7 +11,6 @@ use crate::{VKMLError, gpu::vk_gpu::Gpu, slang::SlangCompiler};
 
 pub struct GpuPool {
     gpus: Vec<Arc<Gpu>>,
-    slang: Arc<SlangCompiler>,
     _entry: Entry,
 }
 
@@ -126,7 +125,6 @@ impl GpuPool {
 
             Ok(Self {
                 gpus: init_gpus,
-                slang,
                 _entry: entry,
             })
         }
@@ -148,10 +146,6 @@ impl GpuPool {
             .get(idx)
             .map(|g| g.as_ref())
             .unwrap_or_else(|| panic!("Requested GPU index {idx} out of range"))
-    }
-
-    pub fn slang(&self) -> &SlangCompiler {
-        &self.slang
     }
 }
 
