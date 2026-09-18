@@ -111,19 +111,11 @@ impl Instruction for GemmInstruction {
         let gpu = cm.gpu_ref(0);
         let max_shmem = gpu.max_shared_memory_size();
 
-        let variants = [
-            (32, 8192, GPUOperation::Gemm_2D2D_Tiled_32x32),
-            (16, 2048, GPUOperation::Gemm_2D2D_Tiled_16x16),
-            (8, 512, GPUOperation::Gemm_2D2D_Tiled_8x8),
-        ];
-
         let m_u64 = m as u64;
         let n_u64 = n as u64;
 
-        for (tile_size, shmem_req, op) in variants {
-            if max_shmem >= shmem_req && m_u64 >= tile_size && n_u64 >= tile_size {
-                return Ok(Some(op));
-            }
+        if max_shmem >= 512 && m_u64 >= 8 && n_u64 >= 8 {
+            return Ok(Some(GPUOperation::Gemm_Tiled));
         }
 
         Ok(Some(GPUOperation::Gemm))
@@ -138,9 +130,7 @@ impl Instruction for GemmInstruction {
     ) -> Result<(), VKMLError> {
         let op_name = match op {
             Some(GPUOperation::Gemm) => GPUOperation::Gemm,
-            Some(GPUOperation::Gemm_2D2D_Tiled_8x8) => GPUOperation::Gemm_2D2D_Tiled_8x8,
-            Some(GPUOperation::Gemm_2D2D_Tiled_16x16) => GPUOperation::Gemm_2D2D_Tiled_16x16,
-            Some(GPUOperation::Gemm_2D2D_Tiled_32x32) => GPUOperation::Gemm_2D2D_Tiled_32x32,
+            Some(GPUOperation::Gemm_Tiled) => GPUOperation::Gemm_Tiled,
             _ => {
                 return Err(VKMLError::Instruction(format!(
                     "Invalid GPUOperation {:?} for Gemm",
@@ -210,15 +200,20 @@ impl Instruction for GemmInstruction {
                 gpu.bind_push_constants(command_buffer, op_name, as_bytes(&pc));
                 gpu.dispatch(command_buffer, local_size, [n as u64, m as u64, 1]);
             }
-            GPUOperation::Gemm_2D2D_Tiled_8x8
-            | GPUOperation::Gemm_2D2D_Tiled_16x16
-            | GPUOperation::Gemm_2D2D_Tiled_32x32 => {
-                let tiled_local_size = match op_name {
-                    GPUOperation::Gemm_2D2D_Tiled_8x8 => [8, 8, 1],
-                    GPUOperation::Gemm_2D2D_Tiled_16x16 => [16, 16, 1],
-                    GPUOperation::Gemm_2D2D_Tiled_32x32 => [32, 32, 1],
-                    _ => unreachable!(),
+            GPUOperation::Gemm_Tiled => {
+                let max_shmem = gpu.max_shared_memory_size();
+                let m_u64 = m as u64;
+                let n_u64 = n as u64;
+
+                let tile_dim = if max_shmem >= 8192 && m_u64 >= 32 && n_u64 >= 32 {
+                    32
+                } else if max_shmem >= 2048 && m_u64 >= 16 && n_u64 >= 16 {
+                    16
+                } else {
+                    8
                 };
+                let tiled_local_size = [tile_dim, tile_dim, 1];
+
                 gpu.bind_slang_compute_pipeline(command_buffer, op_name, y_dtype, tiled_local_size);
                 gpu.bind_storage_buffers_optional(
                     command_buffer,

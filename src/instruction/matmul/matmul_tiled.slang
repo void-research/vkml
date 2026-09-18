@@ -1,12 +1,23 @@
+[vk::constant_id(0)]
+const int WORKGROUP_SIZE_X = 1;
+[vk::constant_id(1)]
+const int WORKGROUP_SIZE_Y = 1;
+[vk::constant_id(2)]
+const int WORKGROUP_SIZE_Z = 1;
+
 struct PushConstants
 {
+    uint batch;
     uint m;
     uint k;
     uint n;
+    uint stride_a_batch;
     uint stride_a0;
     uint stride_a1;
+    uint stride_b_batch;
     uint stride_b0;
     uint stride_b1;
+    uint stride_c_batch;
     uint stride_c0;
     uint stride_c1;
 }
@@ -15,20 +26,25 @@ struct PushConstants
 PushConstants pc;
 
 [shader("compute")]
-[numthreads(32, 32, 1)]
+[numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic>(
     StructuredBuffer<T> src1,
     StructuredBuffer<T> src2,
     RWStructuredBuffer<T> dst,
-    uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
+    uint3 groupId: SV_GroupID,
+    uint3 threadId: SV_GroupThreadID)
 {
-    uint tile_row = groupId.y;
     uint tile_col = groupId.x;
+    uint tile_row = groupId.y;
+    uint batch = groupId.z;
+
+    if (batch >= pc.batch) return;
 
     uint thread_row = threadId.y;
     uint thread_col = threadId.x;
 
-    const uint TILE_SIZE = 32;
+    const uint TILE_SIZE = WORKGROUP_SIZE_X;
+
     uint out_row = tile_row * TILE_SIZE + thread_row;
     uint out_col = tile_col * TILE_SIZE + thread_col;
 
@@ -40,15 +56,17 @@ void main<T : IArithmetic>(
     {
         if (out_row < pc.m && out_col < pc.n)
         {
-            dst[out_row * pc.stride_c0 + out_col * pc.stride_c1] = T(0);
+            dst[batch * pc.stride_c_batch + out_row * pc.stride_c0 + out_col * pc.stride_c1] = T(0);
         }
         return;
     }
 
-    static groupshared T tileA[TILE_SIZE * TILE_SIZE];
-    static groupshared T tileB[TILE_SIZE * TILE_SIZE];
+    static groupshared T tileA[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
+    static groupshared T tileB[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
 
     uint idx = thread_row * TILE_SIZE + thread_col;
+    uint base_a = batch * pc.stride_a_batch;
+    uint base_b = batch * pc.stride_b_batch;
 
     for (uint k_tile = 0; k_tile < num_k_tiles; k_tile++)
     {
@@ -57,11 +75,11 @@ void main<T : IArithmetic>(
         uint row_b = k_offset + thread_row;
 
         tileA[idx] = (out_row < pc.m && col_a < pc.k)
-                         ? src1[out_row * pc.stride_a0 + col_a * pc.stride_a1]
+                         ? src1[base_a + out_row * pc.stride_a0 + col_a * pc.stride_a1]
                          : T(0);
 
         tileB[idx] = (row_b < pc.k && out_col < pc.n)
-                         ? src2[row_b * pc.stride_b0 + out_col * pc.stride_b1]
+                         ? src2[base_b + row_b * pc.stride_b0 + out_col * pc.stride_b1]
                          : T(0);
 
         GroupMemoryBarrierWithGroupSync();
@@ -76,6 +94,6 @@ void main<T : IArithmetic>(
 
     if (out_row < pc.m && out_col < pc.n)
     {
-        dst[out_row * pc.stride_c0 + out_col * pc.stride_c1] = acc;
+        dst[batch * pc.stride_c_batch + out_row * pc.stride_c0 + out_col * pc.stride_c1] = acc;
     }
 }

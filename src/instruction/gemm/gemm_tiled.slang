@@ -1,3 +1,10 @@
+[vk::constant_id(0)]
+const int WORKGROUP_SIZE_X = 1;
+[vk::constant_id(1)]
+const int WORKGROUP_SIZE_Y = 1;
+[vk::constant_id(2)]
+const int WORKGROUP_SIZE_Z = 1;
+
 struct PushConstants
 {
     uint m;
@@ -19,14 +26,32 @@ struct PushConstants
 [[vk::push_constant]]
 PushConstants pc;
 
+interface IGemmScalar
+{
+    static This scale(This val, float s);
+}
+
+extension float : IGemmScalar { static float scale(float val, float s) { return val * s; } }
+extension half : IGemmScalar { static half scale(half val, float s) { return (half)((float)val * s); } }
+extension double : IGemmScalar { static double scale(double val, float s) { return val * (double)s; } }
+extension int : IGemmScalar { static int scale(int val, float s) { return (int)((float)val * s); } }
+extension uint : IGemmScalar { static uint scale(uint val, float s) { return (uint)((float)val * s); } }
+extension int8_t : IGemmScalar { static int8_t scale(int8_t val, float s) { return (int8_t)((float)val * s); } }
+extension uint8_t : IGemmScalar { static uint8_t scale(uint8_t val, float s) { return (uint8_t)((float)val * s); } }
+extension int16_t : IGemmScalar { static int16_t scale(int16_t val, float s) { return (int16_t)((float)val * s); } }
+extension uint16_t : IGemmScalar { static uint16_t scale(uint16_t val, float s) { return (uint16_t)((float)val * s); } }
+extension int64_t : IGemmScalar { static int64_t scale(int64_t val, float s) { return (int64_t)((double)val * (double)s); } }
+extension uint64_t : IGemmScalar { static uint64_t scale(uint64_t val, float s) { return (uint64_t)((double)val * (double)s); } }
+
 [shader("compute")]
-[numthreads(16, 16, 1)]
-void main<T : IArithmetic>(
+[numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
+void main<T : IArithmetic & IGemmScalar>(
     StructuredBuffer<T> a,
     StructuredBuffer<T> b,
     StructuredBuffer<T> c,
     RWStructuredBuffer<T> y,
-    uint3 groupId: SV_GroupID, uint3 threadId: SV_GroupThreadID)
+    uint3 groupId: SV_GroupID,
+    uint3 threadId: SV_GroupThreadID)
 {
     uint tile_row = groupId.y;
     uint tile_col = groupId.x;
@@ -34,7 +59,7 @@ void main<T : IArithmetic>(
     uint thread_row = threadId.y;
     uint thread_col = threadId.x;
 
-    const uint TILE_SIZE = 16;
+    const uint TILE_SIZE = WORKGROUP_SIZE_X;
 
     uint out_row = tile_row * TILE_SIZE + thread_row;
     uint out_col = tile_col * TILE_SIZE + thread_col;
@@ -52,11 +77,11 @@ void main<T : IArithmetic>(
     {
         if (out_row < pc.m && out_col < pc.n)
         {
-            T result = T(pc.alpha) * T(0);
+            T result = T(0);
             if (pc.has_c != 0)
             {
                 uint c_idx = out_row * pc.n + out_col;
-                result = result + T(pc.beta) * c[c_idx];
+                result = result + T.scale(c[c_idx], pc.beta);
             }
             uint y_idx = out_row * pc.stride_y0 + out_col * pc.stride_y1;
             y[y_idx] = result;
@@ -64,8 +89,8 @@ void main<T : IArithmetic>(
         return;
     }
 
-    static groupshared T tileA[TILE_SIZE * TILE_SIZE];
-    static groupshared T tileB[TILE_SIZE * TILE_SIZE];
+    static groupshared T tileA[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
+    static groupshared T tileB[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
 
     uint idx = thread_row * TILE_SIZE + thread_col;
 
@@ -78,6 +103,7 @@ void main<T : IArithmetic>(
         tileA[idx] = (out_row < pc.m && col_a < pc.k)
                          ? a[out_row * stride_a_m + col_a * stride_a_k]
                          : T(0);
+
         tileB[idx] = (row_b < pc.k && out_col < pc.n)
                          ? b[row_b * stride_b_k + out_col * stride_b_n]
                          : T(0);
@@ -94,12 +120,14 @@ void main<T : IArithmetic>(
 
     if (out_row < pc.m && out_col < pc.n)
     {
-        T result = T(pc.alpha) * acc;
+        T result = T.scale(acc, pc.alpha);
+
         if (pc.has_c != 0)
         {
             uint c_idx = out_row * pc.n + out_col;
-            result = result + T(pc.beta) * c[c_idx];
+            result = result + T.scale(c[c_idx], pc.beta);
         }
+
         uint y_idx = out_row * pc.stride_y0 + out_col * pc.stride_y1;
         y[y_idx] = result;
     }

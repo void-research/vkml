@@ -5,8 +5,7 @@ use crate::VKMLError;
 use crate::instruction::matmul::f32_f32_f32_cpu::f32_f32_f32_cpu;
 use crate::instruction::matmul::push_constants::{
     MatMul1D2DPushConstants, MatMul1D3DPushConstants, MatMul2D1DPushConstants,
-    MatMul2D2DPushConstants, MatMul2D3DPushConstants, MatMul3D1DPushConstants,
-    MatMul3D2DPushConstants, MatMul3D3DPushConstants,
+    MatMul2D2DPushConstants, MatMul3D1DPushConstants, MatMulTiledPushConstants,
 };
 use crate::utils::bytes::as_bytes;
 use crate::utils::dtype::slang_iarithmetic_types;
@@ -98,34 +97,8 @@ impl Instruction for MatMulInstruction {
             let gpu = cm.gpu_ref(0);
             let max_shmem = gpu.max_shared_memory_size();
 
-            let variants = [
-                (32, 8192, GPUOperation::MatMul_2D2D_Tiled_32x32),
-                (16, 2048, GPUOperation::MatMul_2D2D_Tiled_16x16),
-                (8, 512, GPUOperation::MatMul_2D2D_Tiled_8x8),
-            ];
-
-            for (tile_size, shmem_req, op) in variants {
-                if max_shmem >= shmem_req {
-                    let min_threshold = match tile_size {
-                        32 => 16,
-                        16 => 1,
-                        8 => 1,
-                        _ => 0,
-                    };
-                    let max_threshold = match tile_size {
-                        32 => 256,
-                        16 => 32,
-                        8 => 8,
-                        _ => 0,
-                    };
-
-                    let min_dim = m.min(n);
-                    let max_dim = m.max(n);
-
-                    if min_dim >= min_threshold && max_dim >= max_threshold {
-                        return Ok(Some(op));
-                    }
-                }
+            if max_shmem >= 512 && m >= 8 && n >= 8 {
+                return Ok(Some(GPUOperation::MatMul_Tiled));
             }
         }
 
@@ -144,14 +117,9 @@ impl Instruction for MatMulInstruction {
                 op @ (GPUOperation::MatMul_1D2D
                 | GPUOperation::MatMul_2D1D
                 | GPUOperation::MatMul_2D2D
-                | GPUOperation::MatMul_2D3D
-                | GPUOperation::MatMul_3D2D
-                | GPUOperation::MatMul_3D3D
                 | GPUOperation::MatMul_3D1D
                 | GPUOperation::MatMul_1D3D
-                | GPUOperation::MatMul_2D2D_Tiled_8x8
-                | GPUOperation::MatMul_2D2D_Tiled_16x16
-                | GPUOperation::MatMul_2D2D_Tiled_32x32),
+                | GPUOperation::MatMul_Tiled),
             ) => op,
             _ => {
                 return Err(VKMLError::Instruction(format!(
@@ -248,9 +216,9 @@ fn determine_operation(
             (1, 2) => Ok(GPUOperation::MatMul_1D2D),
             (2, 1) => Ok(GPUOperation::MatMul_2D1D),
             (2, 2) => Ok(GPUOperation::MatMul_2D2D),
-            (2, 3) => Ok(GPUOperation::MatMul_2D3D),
-            (3, 2) => Ok(GPUOperation::MatMul_3D2D),
-            (3, 3) => Ok(GPUOperation::MatMul_3D3D),
+            (2, 3) => Ok(GPUOperation::MatMul_Tiled),
+            (3, 2) => Ok(GPUOperation::MatMul_Tiled),
+            (3, 3) => Ok(GPUOperation::MatMul_Tiled),
             (3, 1) => Ok(GPUOperation::MatMul_3D1D),
             (1, 3) => Ok(GPUOperation::MatMul_1D3D),
             _ => Err(VKMLError::Instruction(format!(
@@ -303,19 +271,31 @@ fn execute_gpu_matmul(
                 stride_c: *dst_strides.last().unwrap() as u32,
             };
 
+            let max_threads = gpu
+                .max_workgroup_invocations()
+                .min(gpu.max_workgroup_size()[1]);
+            let reduce_threads = if max_threads >= 256 {
+                1 << (31 - max_threads.leading_zeros())
+            } else {
+                max_threads
+            };
+            let wide_threads = gpu.max_workgroup_size()[0]
+                .min(gpu.max_workgroup_invocations())
+                .min(256);
+
             if n >= 64 {
-                // Wide output: 1 thread per column, 256 columns per workgroup
+                // Wide output: 1 thread per column, wide_threads columns per workgroup
                 (
-                    [256, 1, 1],
+                    [wide_threads, 1, 1],
                     as_bytes(&pc).to_vec(),
                     [n as u64, 1, 1],
                 )
             } else {
-                // Narrow output: 1 column per workgroup, 256 reduction threads along K
+                // Narrow output: 1 column per workgroup, reduce_threads along K
                 (
-                    [1, 256, 1],
+                    [1, reduce_threads, 1],
                     as_bytes(&pc).to_vec(),
-                    [n as u64, 256, 1],
+                    [n as u64, reduce_threads as u64, 1],
                 )
             }
         }
@@ -334,27 +314,36 @@ fn execute_gpu_matmul(
                 stride_c: *dst_strides.last().unwrap() as u32,
             };
 
+            let max_threads = gpu
+                .max_workgroup_invocations()
+                .min(gpu.max_workgroup_size()[1]);
+            let reduce_threads = if max_threads >= 256 {
+                1 << (31 - max_threads.leading_zeros())
+            } else {
+                max_threads
+            };
+            let wide_threads = gpu.max_workgroup_size()[0]
+                .min(gpu.max_workgroup_invocations())
+                .min(256);
+
             if m >= 64 {
-                // Wide output: 1 thread per row, 256 rows per workgroup
+                // Wide output: 1 thread per row, wide_threads rows per workgroup
                 (
-                    [256, 1, 1],
+                    [wide_threads, 1, 1],
                     as_bytes(&pc).to_vec(),
                     [m as u64, 1, 1],
                 )
             } else {
-                // Narrow output: 1 row per workgroup, 256 reduction threads along K
+                // Narrow output: 1 row per workgroup, reduce_threads along K
                 (
-                    [1, 256, 1],
+                    [1, reduce_threads, 1],
                     as_bytes(&pc).to_vec(),
-                    [m as u64, 256, 1],
+                    [m as u64, reduce_threads as u64, 1],
                 )
             }
         }
 
-        GPUOperation::MatMul_2D2D
-        | GPUOperation::MatMul_2D2D_Tiled_8x8
-        | GPUOperation::MatMul_2D2D_Tiled_16x16
-        | GPUOperation::MatMul_2D2D_Tiled_32x32 => {
+        GPUOperation::MatMul_2D2D => {
             // [m,k] × [k,n] → [m,n]
             let m = src1_dims[0];
             let k = src1_dims[1];
@@ -372,99 +361,164 @@ fn execute_gpu_matmul(
                 stride_c1: dst_strides[1] as u32,
             };
 
-            let local_size = match operation {
-                GPUOperation::MatMul_2D2D_Tiled_8x8 => [8, 8, 1],
-                GPUOperation::MatMul_2D2D_Tiled_16x16 => [16, 16, 1],
-                GPUOperation::MatMul_2D2D_Tiled_32x32 => [32, 32, 1],
-                _ => gpu.optimal_workgroup_size_2d(n as u64, m as u64),
-            };
-
-            (local_size, as_bytes(&pc).to_vec(), [n as u64, m as u64, 1])
-        }
-
-        GPUOperation::MatMul_2D3D => {
-            // [m,k] × [batch,k,n] → [batch,m,n]
-            let m = src1_dims[0];
-            let k = src1_dims[1];
-            let batch = src2_dims[0];
-            let n = src2_dims[2];
-
-            let pc = MatMul2D3DPushConstants {
-                batch: batch as u32,
-                m: m as u32,
-                k: k as u32,
-                n: n as u32,
-                stride_a0: src1_strides[0] as u32,
-                stride_a1: src1_strides[1] as u32,
-                stride_b0: src2_strides[0] as u32,
-                stride_b1: src2_strides[1] as u32,
-                stride_b2: src2_strides[2] as u32,
-                stride_c0: dst_strides[0] as u32,
-                stride_c1: dst_strides[1] as u32,
-                stride_c2: dst_strides[2] as u32,
-            };
-
             (
-                gpu.optimal_workgroup_size_3d(n as u64, m as u64, batch as u64),
+                gpu.optimal_workgroup_size_2d(n as u64, m as u64),
                 as_bytes(&pc).to_vec(),
-                [n as u64, m as u64, batch as u64],
+                [n as u64, m as u64, 1],
             )
         }
 
-        GPUOperation::MatMul_3D2D => {
-            // [batch,m,k] × [k,n] → [batch,m,n]
-            let batch = src1_dims[0];
-            let m = src1_dims[1];
-            let k = src1_dims[2];
-            let n = src2_dims[1];
+        GPUOperation::MatMul_Tiled => {
+            let a_rank = src1_dims.len();
+            let b_rank = src2_dims.len();
 
-            let pc = MatMul3D2DPushConstants {
-                batch: batch as u32,
-                m: m as u32,
-                k: k as u32,
-                n: n as u32,
-                stride_a0: src1_strides[0] as u32,
-                stride_a1: src1_strides[1] as u32,
-                stride_a2: src1_strides[2] as u32,
-                stride_b0: src2_strides[0] as u32,
-                stride_b1: src2_strides[1] as u32,
-                stride_c0: dst_strides[0] as u32,
-                stride_c1: dst_strides[1] as u32,
-                stride_c2: dst_strides[2] as u32,
+            let (
+                batch,
+                m,
+                k,
+                n,
+                stride_a_batch,
+                stride_a0,
+                stride_a1,
+                stride_b_batch,
+                stride_b0,
+                stride_b1,
+                stride_c_batch,
+                stride_c0,
+                stride_c1,
+            ) = match (a_rank, b_rank) {
+                (2, 2) => {
+                    let m = src1_dims[0] as u32;
+                    let k = src1_dims[1] as u32;
+                    let n = src2_dims[1] as u32;
+                    (
+                        1,
+                        m,
+                        k,
+                        n,
+                        0,
+                        src1_strides[0] as u32,
+                        src1_strides[1] as u32,
+                        0,
+                        src2_strides[0] as u32,
+                        src2_strides[1] as u32,
+                        0,
+                        dst_strides[0] as u32,
+                        dst_strides[1] as u32,
+                    )
+                }
+                (2, 3) => {
+                    let m = src1_dims[0] as u32;
+                    let k = src1_dims[1] as u32;
+                    let batch = src2_dims[0] as u32;
+                    let n = src2_dims[2] as u32;
+                    (
+                        batch,
+                        m,
+                        k,
+                        n,
+                        0,
+                        src1_strides[0] as u32,
+                        src1_strides[1] as u32,
+                        src2_strides[0] as u32,
+                        src2_strides[1] as u32,
+                        src2_strides[2] as u32,
+                        dst_strides[0] as u32,
+                        dst_strides[1] as u32,
+                        dst_strides[2] as u32,
+                    )
+                }
+                (3, 2) => {
+                    let batch = src1_dims[0] as u32;
+                    let m = src1_dims[1] as u32;
+                    let k = src1_dims[2] as u32;
+                    let n = src2_dims[1] as u32;
+                    (
+                        batch,
+                        m,
+                        k,
+                        n,
+                        src1_strides[0] as u32,
+                        src1_strides[1] as u32,
+                        src1_strides[2] as u32,
+                        0,
+                        src2_strides[0] as u32,
+                        src2_strides[1] as u32,
+                        dst_strides[0] as u32,
+                        dst_strides[1] as u32,
+                        dst_strides[2] as u32,
+                    )
+                }
+                (3, 3) => {
+                    let batch_a = src1_dims[0] as u32;
+                    let batch_b = src2_dims[0] as u32;
+                    let batch = batch_a.max(batch_b);
+                    let m = src1_dims[1] as u32;
+                    let k = src1_dims[2] as u32;
+                    let n = src2_dims[2] as u32;
+                    let stride_a_batch = if batch_a == 1 {
+                        0
+                    } else {
+                        src1_strides[0] as u32
+                    };
+                    let stride_b_batch = if batch_b == 1 {
+                        0
+                    } else {
+                        src2_strides[0] as u32
+                    };
+                    (
+                        batch,
+                        m,
+                        k,
+                        n,
+                        stride_a_batch,
+                        src1_strides[1] as u32,
+                        src1_strides[2] as u32,
+                        stride_b_batch,
+                        src2_strides[1] as u32,
+                        src2_strides[2] as u32,
+                        dst_strides[0] as u32,
+                        dst_strides[1] as u32,
+                        dst_strides[2] as u32,
+                    )
+                }
+                _ => {
+                    return Err(VKMLError::Instruction(format!(
+                        "Unsupported MatMul_Tiled dimensions: a_rank={}, b_rank={}",
+                        a_rank, b_rank
+                    )));
+                }
+            };
+
+            let pc = MatMulTiledPushConstants {
+                batch,
+                m,
+                k,
+                n,
+                stride_a_batch,
+                stride_a0,
+                stride_a1,
+                stride_b_batch,
+                stride_b0,
+                stride_b1,
+                stride_c_batch,
+                stride_c0,
+                stride_c1,
+            };
+
+            let max_shmem = gpu.max_shared_memory_size();
+            let m_u64 = m as u64;
+            let n_u64 = n as u64;
+            let tile_dim = if max_shmem >= 8192 && m_u64 >= 32 && n_u64 >= 32 {
+                32
+            } else if max_shmem >= 2048 && m_u64 >= 16 && n_u64 >= 16 {
+                16
+            } else {
+                8
             };
 
             (
-                gpu.optimal_workgroup_size_3d(n as u64, m as u64, batch as u64),
-                as_bytes(&pc).to_vec(),
-                [n as u64, m as u64, batch as u64],
-            )
-        }
-
-        GPUOperation::MatMul_3D3D => {
-            // [batch,m,k] × [batch,k,n] → [batch,m,n]
-            let batch = src1_dims[0];
-            let m = src1_dims[1];
-            let k = src1_dims[2];
-            let n = src2_dims[2];
-
-            let pc = MatMul3D3DPushConstants {
-                batch: batch as u32,
-                m: m as u32,
-                k: k as u32,
-                n: n as u32,
-                stride_a0: src1_strides[0] as u32,
-                stride_a1: src1_strides[1] as u32,
-                stride_a2: src1_strides[2] as u32,
-                stride_b0: src2_strides[0] as u32,
-                stride_b1: src2_strides[1] as u32,
-                stride_b2: src2_strides[2] as u32,
-                stride_c0: dst_strides[0] as u32,
-                stride_c1: dst_strides[1] as u32,
-                stride_c2: dst_strides[2] as u32,
-            };
-
-            (
-                gpu.optimal_workgroup_size_3d(n as u64, m as u64, batch as u64),
+                [tile_dim, tile_dim, 1],
                 as_bytes(&pc).to_vec(),
                 [n as u64, m as u64, batch as u64],
             )
@@ -528,16 +582,9 @@ fn execute_gpu_matmul(
         }
     };
 
-    let push_constant_op = match operation {
-        GPUOperation::MatMul_2D2D_Tiled_8x8
-        | GPUOperation::MatMul_2D2D_Tiled_16x16
-        | GPUOperation::MatMul_2D2D_Tiled_32x32 => GPUOperation::MatMul_2D2D,
-        _ => operation,
-    };
-
     gpu.bind_slang_compute_pipeline(command_buffer, operation, dst_dtype, local_size);
     gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
-    gpu.bind_push_constants(command_buffer, push_constant_op, &push_constants_bytes);
+    gpu.bind_push_constants(command_buffer, operation, &push_constants_bytes);
     gpu.dispatch(command_buffer, local_size, work_size);
 
     Ok(())
