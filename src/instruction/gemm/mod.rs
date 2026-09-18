@@ -119,21 +119,10 @@ impl Instruction for GemmInstruction {
 
         let m_u64 = m as u64;
         let n_u64 = n as u64;
-        let min_dim = m_u64.min(n_u64);
-        let max_dim = m_u64.max(n_u64);
 
         for (tile_size, shmem_req, op) in variants {
-            if max_shmem >= shmem_req {
-                let (min_threshold, max_threshold) = match tile_size {
-                    32 => (16, 256),
-                    16 => (1, 32),
-                    8 => (1, 8),
-                    _ => (u64::MAX, u64::MAX),
-                };
-
-                if min_dim >= min_threshold && max_dim >= max_threshold {
-                    return Ok(Some(op));
-                }
+            if max_shmem >= shmem_req && m_u64 >= tile_size && n_u64 >= tile_size {
+                return Ok(Some(op));
             }
         }
 
