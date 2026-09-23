@@ -1,5 +1,5 @@
 use crate::{
-    instruction::{self, Instruction},
+    instruction::*,
     tensor::TensorDesc,
     tensor_graph::{TensorGraph, TensorId},
     utils::{OnnxAutoPad, error::VKMLError},
@@ -130,11 +130,11 @@ fn convert_onnx_operation_to_instruction(
         .collect::<Result<Vec<TensorId>, VKMLError>>()?;
 
     match onnx_op.op_type() {
-        "MatMul" => Ok(instruction::matmul(
-            input_ids[0],
-            input_ids[1],
-            output_ids[0],
-        )),
+        "MatMul" => Ok(Box::new(MatMulInstruction {
+            src1: input_ids[0],
+            src2: input_ids[1],
+            dst: output_ids[0],
+        })),
         "Gemm" => {
             // GEMM: General Matrix Multiplication
             // Y = alpha * A' * B' + beta * C
@@ -171,16 +171,16 @@ fn convert_onnx_operation_to_instruction(
             // C is optional - check if we have 3 inputs
             let c_id = input_ids.get(2).copied();
 
-            Ok(instruction::gemm(
-                input_ids[0],  // A
-                input_ids[1],  // B
-                c_id,          // C (optional)
-                output_ids[0], // Y
+            Ok(Box::new(GemmInstruction {
+                a: input_ids[0],  // A
+                b: input_ids[1],  // B
+                c: c_id,          // C (optional)
+                y: output_ids[0], // Y
                 alpha,
                 beta,
                 trans_a,
                 trans_b,
-            ))
+            }))
         }
         "Concat" => {
             let axis = if let Some(a) = onnx_op.attributes().get("axis") {
@@ -191,7 +191,11 @@ fn convert_onnx_operation_to_instruction(
                 0usize
             };
 
-            Ok(instruction::concat(input_ids, output_ids[0], axis))
+            Ok(Box::new(ConcatInstruction {
+                sources: input_ids,
+                dst: output_ids[0],
+                dim: axis,
+            }))
         }
         "Reshape" => {
             let shape_id = input_ids[1];
@@ -201,32 +205,51 @@ fn convert_onnx_operation_to_instruction(
                 .attributes()
                 .get("allowzero")
                 .and_then(|a| a.as_int());
-            Ok(instruction::reshape(
-                input_ids[0],
-                output_ids[0],
-                shape_vec,
+            Ok(Box::new(ReshapeInstruction {
+                src: input_ids[0],
+                dst: output_ids[0],
+                shape_values: shape_vec,
                 allowzero,
-            ))
+            }))
         }
         "Expand" => {
             let shape_id = input_ids[1];
             let shape_vec = initialiser_to_i64_vec(&initialisers[shape_id], "Expand")?;
 
-            Ok(instruction::expand(input_ids[0], output_ids[0], shape_vec))
+            Ok(Box::new(ExpandInstruction {
+                src: input_ids[0],
+                dst: output_ids[0],
+                shape_values: shape_vec,
+            }))
         }
         "Shape" => {
             // optional attributes 'start' and 'end'
             let start = onnx_op.attributes().get("start").and_then(|a| a.as_int());
             let end = onnx_op.attributes().get("end").and_then(|a| a.as_int());
 
-            Ok(instruction::shape(input_ids[0], output_ids[0], start, end))
+            Ok(Box::new(ShapeInstruction {
+                src: input_ids[0],
+                dst: output_ids[0],
+                start,
+                end,
+            }))
         }
-        "Sigmoid" => Ok(instruction::sigmoid(input_ids[0], output_ids[0])),
+        "Sigmoid" => Ok(Box::new(SigmoidInstruction {
+            src: input_ids[0],
+            dst: output_ids[0],
+        })),
         "Softmax" => {
             let axis = onnx_op.attributes().get("axis").and_then(|a| a.as_int());
-            Ok(instruction::softmax(input_ids[0], output_ids[0], axis))
+            Ok(Box::new(SoftmaxInstruction {
+                src: input_ids[0],
+                dst: output_ids[0],
+                axis,
+            }))
         }
-        "Identity" => Ok(instruction::identity(input_ids[0], output_ids[0])),
+        "Identity" => Ok(Box::new(IdentityInstruction {
+            src: input_ids[0],
+            dst: output_ids[0],
+        })),
         "MaxPool" => {
             // Parse attributes similar to Conv: kernel_shape, pads, strides, dilations, auto_pad, ceil_mode
             let strides = onnx_op
@@ -267,16 +290,16 @@ fn convert_onnx_operation_to_instruction(
                 .map(|i| i != 0)
                 .unwrap_or(false);
 
-            Ok(instruction::maxpool(
-                input_ids[0],
-                output_ids[0],
+            Ok(Box::new(MaxPoolInstruction {
+                src: input_ids[0],
+                dst: output_ids[0],
                 auto_pad,
                 dilations,
                 kernel_shape,
                 pads,
                 strides,
                 ceil_mode,
-            ))
+            }))
         }
         "ReduceMean" => {
             let keepdims = onnx_op
@@ -300,21 +323,48 @@ fn convert_onnx_operation_to_instruction(
                 None
             };
 
-            Ok(instruction::reducemean(
-                input_ids[0],
+            Ok(Box::new(ReduceMeanInstruction {
+                src: input_ids[0],
                 axes,
                 keepdims,
                 noop_with_empty_axes,
-                output_ids[0],
-            ))
+                dst: output_ids[0],
+            }))
         }
-        "Add" => Ok(instruction::add(input_ids[0], input_ids[1], output_ids[0])),
-        "Sub" => Ok(instruction::sub(input_ids[0], input_ids[1], output_ids[0])),
-        "Mul" => Ok(instruction::mul(input_ids[0], input_ids[1], output_ids[0])),
-        "Div" => Ok(instruction::div(input_ids[0], input_ids[1], output_ids[0])),
-        "Max" => Ok(instruction::max(input_ids[0], input_ids[1], output_ids[0])),
-        "Min" => Ok(instruction::min(input_ids[0], input_ids[1], output_ids[0])),
-        "Relu" => Ok(instruction::relu(input_ids[0], output_ids[0])),
+        "Add" => Ok(Box::new(AddInstruction {
+            src1: input_ids[0],
+            src2: input_ids[1],
+            dst: output_ids[0],
+        })),
+        "Sub" => Ok(Box::new(SubInstruction {
+            src1: input_ids[0],
+            src2: input_ids[1],
+            dst: output_ids[0],
+        })),
+        "Mul" => Ok(Box::new(MulInstruction {
+            src1: input_ids[0],
+            src2: input_ids[1],
+            dst: output_ids[0],
+        })),
+        "Div" => Ok(Box::new(DivInstruction {
+            src1: input_ids[0],
+            src2: input_ids[1],
+            dst: output_ids[0],
+        })),
+        "Max" => Ok(Box::new(MaxInstruction {
+            src1: input_ids[0],
+            src2: input_ids[1],
+            dst: output_ids[0],
+        })),
+        "Min" => Ok(Box::new(MinInstruction {
+            src1: input_ids[0],
+            src2: input_ids[1],
+            dst: output_ids[0],
+        })),
+        "Relu" => Ok(Box::new(ReLUInstruction {
+            src: input_ids[0],
+            dst: output_ids[0],
+        })),
         "Conv" => {
             let weights = input_ids[1];
 
@@ -390,18 +440,18 @@ fn convert_onnx_operation_to_instruction(
                 pads = pv;
             }
 
-            Ok(instruction::conv(
-                input_ids[0],
+            Ok(Box::new(ConvInstruction {
+                src: input_ids[0],
                 weights,
-                input_ids.get(2).copied(),
-                output_ids[0],
-                auto_pad_val,
+                bias: input_ids.get(2).copied(),
+                dst: output_ids[0],
+                auto_pad: auto_pad_val,
                 dilations,
-                groups,
+                group: groups,
                 kernel_shape,
                 pads,
                 strides,
-            ))
+            }))
         }
         unsupported => Err(VKMLError::OnnxImporter(format!(
             "Operation '{}' is not implemented",

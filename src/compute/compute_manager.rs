@@ -3,19 +3,16 @@ use std::{mem, ptr};
 
 use super::print_tensorgraph_stats;
 use crate::gpu::pool::GpuPool;
-use crate::instruction;
+use crate::instruction::{Instruction, TransferToDeviceInstruction};
 use crate::onnx_parser::parse_onnx_model;
 use crate::scheduler::{ExecutionPlan, create_execution_plan, execute_plan};
 use crate::tensor::TensorCell;
-use crate::tensor::{ComputeTarget, Tensor};
+use crate::tensor::{ComputeTarget, Tensor, TensorDesc};
+use crate::tensor_graph::{DependencyGraph, OperationId, TensorGraph, TensorId};
 use crate::utils::error::VKMLError;
 use crate::weight_initialiser::Initialiser;
 use onnx_extractor::Model;
 use zero_pool::global_pool;
-
-use crate::instruction::Instruction;
-use crate::tensor::TensorDesc;
-use crate::tensor_graph::{DependencyGraph, OperationId, TensorGraph, TensorId};
 
 use super::cpu_compute::CPUCompute;
 use super::optimisations::Optimisations;
@@ -244,12 +241,12 @@ impl ComputeManager {
 
                                 if is_input {
                                     let src_device = tensor_locations[tid].clone().unwrap();
-                                    let transfer_instr = instruction::transfer(
-                                        tid,
-                                        new_tensor_id,
-                                        src_device,
-                                        current_device.clone(),
-                                    );
+                                    let transfer_instr = Box::new(TransferToDeviceInstruction {
+                                        src: tid,
+                                        dst: new_tensor_id,
+                                        source_device: src_device,
+                                        target_device: current_device.clone(),
+                                    });
                                     transfer_operations.push((op_id, transfer_instr));
                                 }
 
