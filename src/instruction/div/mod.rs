@@ -5,13 +5,10 @@ use crate::ComputeManager;
 use crate::VKMLError;
 use crate::instruction::div::push_constants::DivPushConstants;
 use crate::utils::as_bytes;
-use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
-    gpu::vk_gpu::Gpu,
-    instruction::{
-        Instruction, div::f32_f32_f32_cpu::f32_f32_f32_cpu, gpu_operations::GPUOperation,
-    },
-    tensor::TensorDesc,
+    gpu::Gpu,
+    instruction::{GpuShader, Instruction, div::f32_f32_f32_cpu::f32_f32_f32_cpu},
+    tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -44,8 +41,11 @@ impl Instruction for DivInstruction {
     }
 
     fn remap_tensor_ids(&mut self, new_inputs: &[TensorId], new_outputs: &[TensorId]) {
-        if new_inputs.len() >= 2 {
+        if !new_inputs.is_empty() {
             self.src1 = new_inputs[0];
+        }
+
+        if new_inputs.len() > 1 {
             self.src2 = new_inputs[1];
         }
 
@@ -54,62 +54,43 @@ impl Instruction for DivInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        slang_iarithmetic_types()
-    }
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let src1_desc = cm.tensor_desc(self.src1);
+        let src2_desc = cm.tensor_desc(self.src2);
+        let dst_desc = cm.tensor_desc(self.dst);
 
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
-
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let src1_tensor = cm.tensor_read(self.src1);
-        let src2_tensor = cm.tensor_read(self.src2);
-        let dst_tensor = cm.tensor_read(self.dst);
-
-        let src1_desc = src1_tensor.desc();
-        let src2_desc = src2_tensor.desc();
-        let dst_desc = dst_tensor.desc();
-
-        // Datatype verification
-        let src1_dtype = src1_desc.data_type();
-        let src2_dtype = src2_desc.data_type();
-        let dst_dtype = dst_desc.data_type();
-        if src1_dtype != src2_dtype || src1_dtype != dst_dtype {
+        if TensorDesc::broadcast_shape(src1_desc.dims(), src2_desc.dims()).is_none() {
             return Err(VKMLError::Instruction(format!(
-                "GPU Div unimplemented for mixed DataType src1:{:?}, src2:{:?}, dst:{:?}",
-                src1_dtype, src2_dtype, dst_dtype
+                "Div instruction {:?}: cannot broadcast shapes {:?} and {:?}",
+                self,
+                src1_desc.dims(),
+                src2_desc.dims()
             )));
         }
 
-        let src1_dims = src1_desc.dims();
-        let src2_dims = src2_desc.dims();
-        let dst_dims = dst_desc.dims();
-
-        let rank = dst_dims.len() as u32;
-        if rank > 8 {
+        if dst_desc.dims().len() > 8 {
             return Err(VKMLError::Instruction(format!(
-                "Div: tensor rank {} exceeds maximum supported rank of 8",
-                rank
+                "Div instruction {:?}: tensor rank exceeds max supported 8 (got {})",
+                self,
+                dst_desc.dims().len()
             )));
         }
 
-        let broadcast_dims =
-            TensorDesc::broadcast_shape(src1_dims, src2_dims).ok_or_else(|| {
-                VKMLError::Instruction(format!(
-                    "GPU Div: Can't broadcast {:?} vs {:?}",
-                    src1_dims, src2_dims
-                ))
-            })?;
-
-        if broadcast_dims != dst_dims {
-            return Err(VKMLError::Instruction(format!(
-                "GPU Div: Broadcast shape {:?} != dst shape {:?}",
-                broadcast_dims, dst_dims
-            )));
+        match target {
+            ComputeTarget::Gpu(gpu) => {
+                let dst_dtype = dst_desc.data_type();
+                let compatible = src1_desc.data_type() == dst_dtype
+                    && src2_desc.data_type() == dst_dtype
+                    && GpuShader::Divide.info().can_run_on(gpu, dst_dtype);
+                Ok(compatible)
+            }
+            ComputeTarget::Cpu => {
+                let compatible = src1_desc.data_type() == DataType::Float
+                    && src2_desc.data_type() == DataType::Float
+                    && dst_desc.data_type() == DataType::Float;
+                Ok(compatible)
+            }
         }
-
-        Ok(Some(GPUOperation::Divide))
     }
 
     fn record_into_command_buffer(
@@ -117,17 +98,8 @@ impl Instruction for DivInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(GPUOperation::Divide) => GPUOperation::Divide,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for Div",
-                    op
-                )));
-            }
-        };
+        let op_name = GpuShader::Divide;
 
         let src1_tensor = cm.tensor_read(self.src1);
         let src1_mem = src1_tensor.get_gpu_memory_or_panic();

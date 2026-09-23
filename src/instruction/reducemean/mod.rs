@@ -2,13 +2,16 @@ mod f32_cpu;
 pub mod push_constants;
 
 use crate::VKMLError;
-use crate::gpu::vk_gpu::Gpu;
+use crate::gpu::Gpu;
 use crate::instruction::reducemean::f32_cpu::f32_cpu;
 use crate::instruction::reducemean::push_constants::ReduceMeanPushConstants;
-use crate::instruction::{GPUOperation, Instruction};
+use crate::instruction::{Instruction, gpu_operations::GpuShader};
 use crate::utils::as_bytes;
-use crate::utils::dtype::slang_iarithmetic_types;
-use crate::{ComputeManager, tensor::TensorDesc, tensor_graph::TensorId};
+use crate::{
+    ComputeManager,
+    tensor::{ComputeTarget, TensorDesc},
+    tensor_graph::TensorId,
+};
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
@@ -49,27 +52,23 @@ impl Instruction for ReduceMeanInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        slang_iarithmetic_types()
-    }
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let src_desc = cm.tensor_desc(self.src);
+        let dst_desc = cm.tensor_desc(self.dst);
+        let dst_dtype = dst_desc.data_type();
 
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
-
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let src_t = cm.tensor_read(self.src);
-        let dst_t = cm.tensor_read(self.dst);
-        let src_dtype = src_t.desc().data_type();
-        let dst_dtype = dst_t.desc().data_type();
-
-        if src_dtype != dst_dtype {
-            return Err(VKMLError::Instruction(format!(
-                "GPU ReduceMean unimplemented for DataType src:{:?}, dst:{:?}",
-                src_dtype, dst_dtype
-            )));
+        match target {
+            ComputeTarget::Gpu(gpu) => {
+                let compatible = src_desc.data_type() == dst_dtype
+                    && GpuShader::ReduceMean.info().can_run_on(gpu, dst_dtype);
+                Ok(compatible)
+            }
+            ComputeTarget::Cpu => {
+                let compatible =
+                    src_desc.data_type() == DataType::Float && dst_dtype == DataType::Float;
+                Ok(compatible)
+            }
         }
-        Ok(Some(GPUOperation::ReduceMean))
     }
 
     fn record_into_command_buffer(
@@ -77,17 +76,8 @@ impl Instruction for ReduceMeanInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(GPUOperation::ReduceMean) => GPUOperation::ReduceMean,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for ReduceMean",
-                    op
-                )));
-            }
-        };
+        let shader = GpuShader::ReduceMean;
 
         // GPU implementation: two-pass reduction (sum then scale)
         let src_t = cm.tensor_read(self.src);
@@ -141,14 +131,12 @@ impl Instruction for ReduceMeanInstruction {
 
         let dst_dtype = dst_t.desc().data_type();
 
-        let gpu_op = op_name;
-
         // Choose a local size for dispatch (1D op)
         let local_size = gpu.optimal_workgroup_size_1d(out_elements);
 
-        gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
+        gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-        gpu.bind_push_constants(command_buffer, gpu_op, mean_pc_bytes);
+        gpu.bind_push_constants(command_buffer, shader, mean_pc_bytes);
         gpu.dispatch(command_buffer, local_size, [out_elements, 1, 1]);
 
         Ok(())

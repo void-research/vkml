@@ -20,12 +20,6 @@ pub enum VKMLError {
     #[error("Tensor Graph error: {0}")]
     TensorGraph(String),
 
-    #[error("Graph Model error: {0}")]
-    GraphModel(String),
-
-    #[error("Layer error: {0}")]
-    Layer(String),
-
     #[error("Instruction error: {0}")]
     Instruction(String),
 

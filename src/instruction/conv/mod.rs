@@ -8,13 +8,11 @@ use crate::instruction::conv::push_constants::{
 };
 use crate::tensor::TensorDesc;
 use crate::utils::bytes::as_bytes;
-use crate::utils::dtype::slang_iarithmetic_types;
 use crate::utils::{OnnxAutoPad, calc_begin_and_end_pads};
 use crate::{
-    gpu::vk_gpu::Gpu,
-    instruction::{
-        Instruction, conv::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu, gpu_operations::GPUOperation,
-    },
+    gpu::Gpu,
+    instruction::{GpuShader, Instruction, conv::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu},
+    tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -46,6 +44,54 @@ impl ConvInstruction {
             src_desc,
         );
         pb
+    }
+
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GpuShader> {
+        let src_desc = cm.tensor_desc(self.src);
+        let weights_desc = cm.tensor_desc(self.weights);
+        let dst_desc = cm.tensor_desc(self.dst);
+
+        let src_dims = src_desc.dims();
+        let dst_dims = dst_desc.dims();
+        if src_dims.len() < 2 || dst_dims.len() < 2 {
+            return None;
+        }
+
+        let c_val = src_dims[1];
+        let m_val = dst_dims[1];
+        if self.group < 1 || c_val % self.group != 0 || m_val % self.group != 0 {
+            return None;
+        }
+
+        let spatial_rank = if src_desc.ndim() >= 2 {
+            src_desc.ndim() - 2
+        } else {
+            0
+        };
+
+        let shader = match spatial_rank {
+            0 | 1 => GpuShader::Conv_1D,
+            2 => GpuShader::Conv_2D,
+            3 => GpuShader::Conv_3D,
+            _ => return None,
+        };
+
+        let dtype = src_desc.data_type();
+        if weights_desc.data_type() != dtype || dst_desc.data_type() != dtype {
+            return None;
+        }
+
+        if let Some(bias_id) = self.bias
+            && cm.tensor_desc(bias_id).data_type() != dtype
+        {
+            return None;
+        }
+
+        if shader.info().can_run_on(gpu, dtype) {
+            Some(shader)
+        } else {
+            None
+        }
     }
 }
 
@@ -99,68 +145,38 @@ impl Instruction for ConvInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        slang_iarithmetic_types()
-    }
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let src_desc = cm.tensor_desc(self.src);
+        let weights_desc = cm.tensor_desc(self.weights);
+        let dst_desc = cm.tensor_desc(self.dst);
 
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
-
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let src_tensor = cm.tensor_read(self.src);
-        let weights_tensor = cm.tensor_read(self.weights);
-        let dst_tensor = cm.tensor_read(self.dst);
-        let bias_tensor_opt = self.bias.map(|bid| cm.tensor_read(bid));
-
-        let src_dtype = src_tensor.desc().data_type();
-        let weight_dtype = weights_tensor.desc().data_type();
-        let bias_dtype_opt = bias_tensor_opt.as_ref().map(|t| t.desc().data_type());
-        let dst_dtype = dst_tensor.desc().data_type();
-
-        if src_dtype != weight_dtype
-            || src_dtype != dst_dtype
-            || (bias_dtype_opt.is_some() && bias_dtype_opt != Some(src_dtype))
-        {
+        let spatial_rank = src_desc.ndim().saturating_sub(2);
+        if !(1..=3).contains(&spatial_rank) {
             return Err(VKMLError::Instruction(format!(
-                "GPU Conv unimplemented for mixed DataType src:{:?}, weight:{:?}, bias:{:?}, dst:{:?}",
-                src_dtype,
-                weight_dtype,
-                bias_dtype_opt
-                    .map(|dt| format!("{:?}", dt))
-                    .unwrap_or_else(|| "None".to_string()),
-                dst_dtype
+                "Conv instruction {:?}: spatial rank must be 1, 2, or 3, got {}",
+                self, spatial_rank
             )));
         }
 
-        let src_desc = src_tensor.desc();
-        let c_val = src_desc.dims()[1];
-        let dst_desc = dst_tensor.desc();
-        let m_val = dst_desc.dims()[1];
-        if self.group < 1 || c_val % self.group != 0 || m_val % self.group != 0 {
-            return Err(VKMLError::Instruction(format!(
-                "invalid group configuration: group={}, C={}, M={}",
-                self.group, c_val, m_val
-            )));
-        }
+        match target {
+            ComputeTarget::Gpu(gpu) => Ok(self.select_shader(gpu, cm).is_some()),
+            ComputeTarget::Cpu => {
+                if src_desc.data_type() != DataType::Float
+                    || weights_desc.data_type() != DataType::Float
+                    || dst_desc.data_type() != DataType::Float
+                {
+                    return Ok(false);
+                }
 
-        let spatial_rank = if src_desc.ndim() >= 2 {
-            src_desc.ndim() - 2
-        } else {
-            0
-        };
-        let gpu_op = match spatial_rank {
-            0 | 1 => GPUOperation::Conv_1D,
-            2 => GPUOperation::Conv_2D,
-            3 => GPUOperation::Conv_3D,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU Conv unsupported spatial rank {}",
-                    spatial_rank
-                )));
+                if let Some(bias_id) = self.bias
+                    && cm.tensor_desc(bias_id).data_type() != DataType::Float
+                {
+                    return Ok(false);
+                }
+
+                Ok(true)
             }
-        };
-        Ok(Some(gpu_op))
+        }
     }
 
     fn record_into_command_buffer(
@@ -168,21 +184,14 @@ impl Instruction for ConvInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(GPUOperation::Conv_1D) => GPUOperation::Conv_1D,
-            Some(GPUOperation::Conv_2D) => GPUOperation::Conv_2D,
-            Some(GPUOperation::Conv_3D) => GPUOperation::Conv_3D,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for Conv",
-                    op
-                )));
-            }
-        };
+        let op_name = self.select_shader(gpu, cm).ok_or_else(|| {
+            VKMLError::Instruction(format!(
+                "GPU Conv has no compatible shader for instruction {:?}",
+                self
+            ))
+        })?;
 
-        // Acquire read guards for tensors so we can access descriptors and GPU memory
         let src_tensor = cm.tensor_read(self.src);
         let weights_tensor = cm.tensor_read(self.weights);
         let dst_tensor = cm.tensor_read(self.dst);

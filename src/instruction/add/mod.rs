@@ -5,13 +5,10 @@ use crate::ComputeManager;
 use crate::VKMLError;
 use crate::instruction::add::push_constants::AddPushConstants;
 use crate::utils::as_bytes;
-use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
-    gpu::vk_gpu::Gpu,
-    instruction::{
-        Instruction, add::f32_f32_f32_cpu::f32_f32_f32_cpu, gpu_operations::GPUOperation,
-    },
-    tensor::TensorDesc,
+    gpu::Gpu,
+    instruction::{GpuShader, Instruction, add::f32_f32_f32_cpu::f32_f32_f32_cpu},
+    tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -22,6 +19,46 @@ pub struct AddInstruction {
     pub src1: TensorId,
     pub src2: TensorId,
     pub dst: TensorId,
+}
+
+impl AddInstruction {
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GpuShader> {
+        let src1_desc = cm.tensor_desc(self.src1);
+        let src2_desc = cm.tensor_desc(self.src2);
+        let dst_desc = cm.tensor_desc(self.dst);
+
+        let dst_dims = dst_desc.dims();
+        let rank = dst_dims.len();
+        if rank > 8 {
+            return None;
+        }
+
+        let dst_dtype = dst_desc.data_type();
+        if src1_desc.data_type() != dst_dtype || src2_desc.data_type() != dst_dtype {
+            return None;
+        }
+
+        let strides_a = TensorDesc::broadcast_strides(src1_desc.dims(), dst_dims);
+        let strides_b = TensorDesc::broadcast_strides(src2_desc.dims(), dst_dims);
+
+        let use_nostride = dst_dims.len() == 1
+            && strides_a.len() == 1
+            && strides_b.len() == 1
+            && strides_a[0] == 0
+            && strides_b[0] == 0;
+
+        let shader = if use_nostride {
+            GpuShader::Addition_NoStride
+        } else {
+            GpuShader::Addition
+        };
+
+        if shader.info().can_run_on(gpu, dst_dtype) {
+            Some(shader)
+        } else {
+            None
+        }
+    }
 }
 
 impl Debug for AddInstruction {
@@ -44,8 +81,11 @@ impl Instruction for AddInstruction {
     }
 
     fn remap_tensor_ids(&mut self, new_inputs: &[TensorId], new_outputs: &[TensorId]) {
-        if new_inputs.len() >= 2 {
+        if !new_inputs.is_empty() {
             self.src1 = new_inputs[0];
+        }
+
+        if new_inputs.len() > 1 {
             self.src2 = new_inputs[1];
         }
 
@@ -54,76 +94,29 @@ impl Instruction for AddInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        slang_iarithmetic_types()
-    }
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let src1_desc = cm.tensor_desc(self.src1);
+        let src2_desc = cm.tensor_desc(self.src2);
+        let dst_desc = cm.tensor_desc(self.dst);
 
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
-
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let src1_tensor = cm.tensor_read(self.src1);
-        let src2_tensor = cm.tensor_read(self.src2);
-        let dst_tensor = cm.tensor_read(self.dst);
-
-        let src1_desc = src1_tensor.desc();
-        let src2_desc = src2_tensor.desc();
-        let dst_desc = dst_tensor.desc();
-
-        // Datatype verification
-        let src1_dtype = src1_desc.data_type();
-        let src2_dtype = src2_desc.data_type();
-        let dst_dtype = dst_desc.data_type();
-        if src1_dtype != src2_dtype || src1_dtype != dst_dtype {
+        if TensorDesc::broadcast_shape(src1_desc.dims(), src2_desc.dims()).is_none() {
             return Err(VKMLError::Instruction(format!(
-                "GPU Add unimplemented for mixed DataType src1:{:?}, src2:{:?}, dst:{:?}",
-                src1_dtype, src2_dtype, dst_dtype
+                "Add instruction {:?}: cannot broadcast shapes {:?} and {:?}",
+                self,
+                src1_desc.dims(),
+                src2_desc.dims()
             )));
         }
 
-        let src1_dims_usize = src1_desc.dims();
-        let src2_dims_usize = src2_desc.dims();
-        let dst_dims_usize = dst_desc.dims();
-
-        let rank = dst_dims_usize.len() as u32;
-        if rank > 8 {
-            return Err(VKMLError::Instruction(format!(
-                "Add: tensor rank {} exceeds maximum supported rank of 8",
-                rank
-            )));
+        match target {
+            ComputeTarget::Gpu(gpu) => Ok(self.select_shader(gpu, cm).is_some()),
+            ComputeTarget::Cpu => {
+                let compatible = src1_desc.data_type() == DataType::Float
+                    && src2_desc.data_type() == DataType::Float
+                    && dst_desc.data_type() == DataType::Float;
+                Ok(compatible)
+            }
         }
-
-        let broadcast_dims = TensorDesc::broadcast_shape(src1_dims_usize, src2_dims_usize)
-            .ok_or_else(|| {
-                VKMLError::Instruction(format!(
-                    "GPU Add: Can't broadcast {:?} vs {:?}",
-                    src1_dims_usize, src2_dims_usize
-                ))
-            })?;
-
-        if broadcast_dims != dst_dims_usize {
-            return Err(VKMLError::Instruction(format!(
-                "GPU Add: Broadcast shape {:?} != dst shape {:?}",
-                broadcast_dims, dst_dims_usize
-            )));
-        }
-
-        let strides_a_usize = TensorDesc::broadcast_strides(src1_dims_usize, dst_dims_usize);
-        let strides_b_usize = TensorDesc::broadcast_strides(src2_dims_usize, dst_dims_usize);
-
-        let use_nostride = dst_dims_usize.len() == 1
-            && strides_a_usize.len() == 1
-            && strides_b_usize.len() == 1
-            && strides_a_usize[0] == 0
-            && strides_b_usize[0] == 0;
-
-        let op_name = if use_nostride {
-            GPUOperation::Addition_NoStride
-        } else {
-            GPUOperation::Addition
-        };
-        Ok(Some(op_name))
     }
 
     fn record_into_command_buffer(
@@ -131,18 +124,13 @@ impl Instruction for AddInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(GPUOperation::Addition) => GPUOperation::Addition,
-            Some(GPUOperation::Addition_NoStride) => GPUOperation::Addition_NoStride,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for Add",
-                    op
-                )));
-            }
-        };
+        let op_name = self.select_shader(gpu, cm).ok_or_else(|| {
+            VKMLError::Instruction(format!(
+                "GPU Add has no compatible shader for instruction {:?}",
+                self
+            ))
+        })?;
 
         let src1_tensor = cm.tensor_read(self.src1);
         let src1_mem = src1_tensor.get_gpu_memory_or_panic();
@@ -194,7 +182,7 @@ impl Instruction for AddInstruction {
         let dst_dtype = dst_desc.data_type();
         let local_size = gpu.optimal_workgroup_size_1d(total_elements);
 
-        if op_name == GPUOperation::Addition_NoStride {
+        if op_name == GpuShader::Addition_NoStride {
             gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
             gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
 

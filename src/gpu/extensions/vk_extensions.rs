@@ -4,19 +4,15 @@ use crate::utils::dtype::{bool_to_vk_bool32, vk_to_onnx_dtype};
 use crate::utils::error::VKMLError;
 use onnx_extractor::DataType;
 use std::any::Any;
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::{CStr, c_void};
 use std::os::raw::c_char;
 use std::ptr;
 use vulkanalia::vk::InstanceV1_0;
 use vulkanalia::{Instance, vk};
 
 // helpers for preparing device extension names and an owned p_next chain
-// Returned value owns CStrings and any boxed feature structs. keep it
-// alive until after create_device returns so pointers stay valid.
 pub struct DeviceCreateExtras {
-    // owned extension names must be kept alive while name_ptrs are used
-    pub names: Vec<CString>,
-    // raw pointers into names suitable for passing to Vulkan create info
+    // raw pointers into static extension names suitable for passing to Vulkan create info
     pub name_ptrs: Vec<*const c_char>,
     // owner for a heap-allocated p_next chain. Use pnext.ptr as the
     // DeviceCreateInfo::next value. When no features are enabled pnext.ptr
@@ -63,12 +59,12 @@ pub struct VkExtensions {
 
 impl VkExtensions {
     // extension names we care about
-    pub const VK_KHR_COOPERATIVE_MATRIX: &'static str = "VK_KHR_cooperative_matrix";
-    pub const VK_NV_COOPERATIVE_MATRIX2: &'static str = "VK_NV_cooperative_matrix2";
-    pub const VK_EXT_MEMORY_BUDGET: &'static str = "VK_EXT_memory_budget";
-    pub const VK_KHR_SHADER_FLOAT16_INT8: &'static str = "VK_KHR_shader_float16_int8";
-    pub const VK_KHR_16BIT_STORAGE: &'static str = "VK_KHR_16bit_storage";
-    pub const VK_KHR_SHADER_BFLOAT16: &'static str = "VK_KHR_shader_bfloat16";
+    pub const VK_KHR_COOPERATIVE_MATRIX: &'static CStr = c"VK_KHR_cooperative_matrix";
+    pub const VK_NV_COOPERATIVE_MATRIX2: &'static CStr = c"VK_NV_cooperative_matrix2";
+    pub const VK_EXT_MEMORY_BUDGET: &'static CStr = c"VK_EXT_memory_budget";
+    pub const VK_KHR_SHADER_FLOAT16_INT8: &'static CStr = c"VK_KHR_shader_float16_int8";
+    pub const VK_KHR_16BIT_STORAGE: &'static CStr = c"VK_KHR_16bit_storage";
+    pub const VK_KHR_SHADER_BFLOAT16: &'static CStr = c"VK_KHR_shader_bfloat16";
 
     pub fn from_extension_properties(
         instance: &Instance,
@@ -78,29 +74,22 @@ impl VkExtensions {
         let mut res = Self::default();
 
         for p in props {
-            // convert fixed-size name array to string
-            let name_cstr = unsafe { CStr::from_ptr(p.extension_name.as_ptr()) };
-            let name = name_cstr.to_string_lossy();
+            // convert fixed-size name array to CStr
+            let name = unsafe { CStr::from_ptr(p.extension_name.as_ptr()) };
 
-            match name.as_ref() {
-                Self::VK_KHR_COOPERATIVE_MATRIX => {
+            match name.to_bytes() {
+                b"VK_KHR_cooperative_matrix" => {
                     res.cooperative_matrix =
                         Self::query_cooperative_matrix_limits(instance, physical_device);
                 }
-                Self::VK_NV_COOPERATIVE_MATRIX2 => {
+                b"VK_NV_cooperative_matrix2" => {
                     res.cooperative_matrix_nv2 =
                         query_cooperative_matrix_nv2_limits(instance, physical_device);
                 }
-                Self::VK_EXT_MEMORY_BUDGET => res.memory_budget = true,
-                Self::VK_KHR_SHADER_FLOAT16_INT8 => {
-                    res.shader_float_16_int8 = true;
-                }
-                Self::VK_KHR_16BIT_STORAGE => {
-                    res.storage_16bit = true;
-                }
-                Self::VK_KHR_SHADER_BFLOAT16 => {
-                    res.shader_bfloat16 = true;
-                }
+                b"VK_EXT_memory_budget" => res.memory_budget = true,
+                b"VK_KHR_shader_float16_int8" => res.shader_float_16_int8 = true,
+                b"VK_KHR_16bit_storage" => res.storage_16bit = true,
+                b"VK_KHR_shader_bfloat16" => res.shader_bfloat16 = true,
                 _ => {}
             }
         }
@@ -147,33 +136,28 @@ impl VkExtensions {
         }
     }
 
-    // return owned CStrings for extensions we want to enable
-    pub fn enabled_extension_names(&self) -> Vec<CString> {
+    // return static CStr references for extensions we want to enable
+    pub fn enabled_extension_names(&self) -> Vec<&'static CStr> {
         let mut v = Vec::new();
 
         if self.cooperative_matrix.is_some() {
-            v.push(CString::new(Self::VK_KHR_COOPERATIVE_MATRIX).unwrap());
+            v.push(Self::VK_KHR_COOPERATIVE_MATRIX);
         }
         if self.cooperative_matrix_nv2.is_some() {
-            v.push(CString::new(Self::VK_NV_COOPERATIVE_MATRIX2).unwrap());
+            v.push(Self::VK_NV_COOPERATIVE_MATRIX2);
         }
         if self.memory_budget {
-            v.push(CString::new(Self::VK_EXT_MEMORY_BUDGET).unwrap());
+            v.push(Self::VK_EXT_MEMORY_BUDGET);
         }
         if self.shader_bfloat16 {
-            v.push(CString::new(Self::VK_KHR_SHADER_BFLOAT16).unwrap());
+            v.push(Self::VK_KHR_SHADER_BFLOAT16);
         }
 
         v
     }
 
-    // prepare CStrings and an owned p_next chain (if needed)
-    // returned struct owns everything; keep it alive through create_device
+    // prepare C-string pointers and an owned p_next chain (if needed)
     pub fn prepare_device_create(&self) -> DeviceCreateExtras {
-        let names = self.enabled_extension_names();
-        let name_ptrs: Vec<*const c_char> =
-            names.iter().map(|s| s.as_ptr() as *const c_char).collect();
-
         let mut holders: Vec<Box<dyn Any>> = Vec::new();
         let mut head: *mut c_void = ptr::null_mut();
 
@@ -252,8 +236,11 @@ impl VkExtensions {
         }
 
         DeviceCreateExtras {
-            names,
-            name_ptrs,
+            name_ptrs: self
+                .enabled_extension_names()
+                .iter()
+                .map(|s| s.as_ptr())
+                .collect(),
             pnext: DevicePNext {
                 ptr: head,
                 _holders: holders,

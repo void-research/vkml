@@ -7,8 +7,9 @@ use crate::instruction::softmax::push_constants::SoftmaxPushConstants;
 use crate::utils::as_bytes;
 
 use crate::{
-    gpu::vk_gpu::Gpu,
-    instruction::{Instruction, gpu_operations::GPUOperation, softmax::f32_f32_cpu::f32_f32_cpu},
+    gpu::Gpu,
+    instruction::{GpuShader, Instruction, softmax::f32_f32_cpu::f32_f32_cpu},
+    tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -61,47 +62,23 @@ impl Instruction for SoftmaxInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float, DataType::Float16]
-    }
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let src_desc = cm.tensor_desc(self.src);
+        let dst_desc = cm.tensor_desc(self.dst);
+        let dst_dtype = dst_desc.data_type();
 
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
-
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let src_tensor = cm.tensor_read(self.src);
-        let dst_tensor = cm.tensor_read(self.dst);
-        let src_dtype = src_tensor.desc().data_type();
-        let dst_dtype = dst_tensor.desc().data_type();
-
-        if src_dtype != dst_dtype {
-            return Err(VKMLError::Instruction(format!(
-                "GPU Softmax unimplemented for DataType src:{:?}, dst:{:?}",
-                src_dtype, dst_dtype
-            )));
-        }
-
-        let dims = src_tensor.desc().dims();
-        let dim = self.resolve_axis(dims.len());
-        if dim != dims.len() - 1 {
-            return Err(VKMLError::Instruction(format!(
-                "Only softmax on the last dimension is currently implemented, requested dimension: {}",
-                dim
-            )));
-        }
-
-        let op_name = match dst_dtype {
-            DataType::Float => GPUOperation::Softmax_FP32,
-            DataType::Float16 => GPUOperation::Softmax_FP16,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU Softmax unsupported for DataType {:?}",
-                    dst_dtype
-                )));
+        match target {
+            ComputeTarget::Gpu(gpu) => {
+                let compatible = src_desc.data_type() == dst_dtype
+                    && GpuShader::Softmax.info().can_run_on(gpu, dst_dtype);
+                Ok(compatible)
             }
-        };
-        Ok(Some(op_name))
+            ComputeTarget::Cpu => {
+                let compatible =
+                    src_desc.data_type() == DataType::Float && dst_dtype == DataType::Float;
+                Ok(compatible)
+            }
+        }
     }
 
     fn record_into_command_buffer(
@@ -109,18 +86,8 @@ impl Instruction for SoftmaxInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(GPUOperation::Softmax_FP32) => GPUOperation::Softmax_FP32,
-            Some(GPUOperation::Softmax_FP16) => GPUOperation::Softmax_FP16,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for Softmax",
-                    op
-                )));
-            }
-        };
+        let op_name = GpuShader::Softmax;
 
         let src_tensor = cm.tensor_read(self.src);
         let src_mem = src_tensor.get_gpu_memory_or_panic();

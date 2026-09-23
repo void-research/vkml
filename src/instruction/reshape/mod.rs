@@ -1,8 +1,7 @@
 use crate::VKMLError;
-use crate::utils::dtype::onnx_datatype_all_valid;
 use crate::{
-    ComputeManager, DataType, gpu::vk_gpu::Gpu, instruction::GPUOperation,
-    instruction::Instruction, tensor_graph::TensorId,
+    ComputeManager, gpu::Gpu, instruction::Instruction, tensor::ComputeTarget,
+    tensor_graph::TensorId,
 };
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::{vk, vk::DeviceV1_0};
@@ -45,12 +44,8 @@ impl Instruction for ReshapeInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        onnx_datatype_all_valid()
-    }
-
-    fn cpu_supported_types(&self) -> &[DataType] {
-        onnx_datatype_all_valid()
+    fn can_run_on(&self, _target: &ComputeTarget, _cm: &ComputeManager) -> Result<bool, VKMLError> {
+        Ok(true)
     }
 
     fn record_into_command_buffer(
@@ -58,7 +53,6 @@ impl Instruction for ReshapeInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        _op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
         // Reshape in Vulkan is a logical operation, not a physical one
         // We essentially need to copy data between the tensors

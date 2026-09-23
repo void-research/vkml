@@ -1,9 +1,11 @@
-use crate::VKMLError;
+use crate::{VKMLError, gpu::Gpu};
+use onnx_extractor::DataType;
 
-// TODO: Investigate Slang compile generics, eg MatMul_2D2D(usize, usize)
+pub use crate::utils::dtype::{ARITHMETIC_TYPES, FLOAT_TYPES};
+
 #[allow(non_camel_case_types)]
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
-pub enum GPUOperation {
+pub enum GpuShader {
     Addition,
     Addition_NoStride,
     Subtract,
@@ -12,16 +14,14 @@ pub enum GPUOperation {
     Maximum,
     Minimum,
     ReLU,
-    Sigmoid_FP32,
-    Sigmoid_FP16,
+    Sigmoid,
+    Softmax,
     Expand,
     ReduceMean,
     Shape_Write,
     MaxPool_1D,
     MaxPool_2D,
     MaxPool_3D,
-    Softmax_FP32,
-    Softmax_FP16,
     Conv_1D,
     Conv_2D,
     Conv_3D,
@@ -35,113 +35,164 @@ pub enum GPUOperation {
     Gemm_Tiled,
 }
 
-impl GPUOperation {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            GPUOperation::Addition => "addition",
-            GPUOperation::Addition_NoStride => "addition_nostride",
-            GPUOperation::Subtract => "subtract",
-            GPUOperation::Multiply => "multiply",
-            GPUOperation::Divide => "divide",
-            GPUOperation::Maximum => "maximum",
-            GPUOperation::Minimum => "minimum",
-            GPUOperation::ReLU => "relu",
-            GPUOperation::Sigmoid_FP32 => "sigmoid_fp32",
-            GPUOperation::Sigmoid_FP16 => "sigmoid_fp16",
-            GPUOperation::Expand => "expand",
-            GPUOperation::ReduceMean => "reducemean",
-            GPUOperation::Shape_Write => "shape_write",
-            GPUOperation::MaxPool_1D => "maxpool_1d",
-            GPUOperation::MaxPool_2D => "maxpool_2d",
-            GPUOperation::MaxPool_3D => "maxpool_3d",
-            GPUOperation::Softmax_FP32 => "softmax_fp32",
-            GPUOperation::Softmax_FP16 => "softmax_fp16",
-            GPUOperation::Conv_1D => "conv_1d",
-            GPUOperation::Conv_2D => "conv_2d",
-            GPUOperation::Conv_3D => "conv_3d",
-            GPUOperation::MatMul_1D2D => "matmul_1d2d",
-            GPUOperation::MatMul_2D1D => "matmul_2d1d",
-            GPUOperation::MatMul_2D2D => "matmul_2d2d",
-            GPUOperation::MatMul_3D1D => "matmul_3d1d",
-            GPUOperation::MatMul_1D3D => "matmul_1d3d",
-            GPUOperation::MatMul_Tiled => "matmul_tiled",
-            GPUOperation::Gemm => "gemm",
-            GPUOperation::Gemm_Tiled => "gemm_tiled",
+#[derive(Clone, Copy, Debug)]
+pub struct ShaderInfo {
+    pub name: &'static str,
+    pub source: &'static str,
+    pub bindings: usize,
+    pub supported_types: &'static [DataType],
+}
+
+impl ShaderInfo {
+    pub const fn arithmetic(name: &'static str, source: &'static str, bindings: usize) -> Self {
+        Self {
+            name,
+            source,
+            bindings,
+            supported_types: ARITHMETIC_TYPES,
         }
+    }
+
+    pub const fn float(name: &'static str, source: &'static str, bindings: usize) -> Self {
+        Self {
+            name,
+            source,
+            bindings,
+            supported_types: FLOAT_TYPES,
+        }
+    }
+
+    pub const fn new(
+        name: &'static str,
+        source: &'static str,
+        bindings: usize,
+        supported_types: &'static [DataType],
+    ) -> Self {
+        Self {
+            name,
+            source,
+            bindings,
+            supported_types,
+        }
+    }
+
+    pub fn can_run_on(&self, gpu: &Gpu, dtype: DataType) -> bool {
+        if !self.supported_types.contains(&dtype) {
+            return false;
+        }
+        if dtype == DataType::Float16 && !gpu.extensions().supports_fp16() {
+            return false;
+        }
+        true
+    }
+}
+
+impl GpuShader {
+    pub fn info(&self) -> ShaderInfo {
+        match self {
+            GpuShader::Addition => {
+                ShaderInfo::arithmetic("addition", include_str!("add/add.slang"), 3)
+            }
+            GpuShader::Addition_NoStride => ShaderInfo::arithmetic(
+                "addition_nostride",
+                include_str!("add/add_nostride.slang"),
+                3,
+            ),
+            GpuShader::Subtract => {
+                ShaderInfo::arithmetic("subtract", include_str!("sub/sub.slang"), 3)
+            }
+            GpuShader::Multiply => {
+                ShaderInfo::arithmetic("multiply", include_str!("mul/mul.slang"), 3)
+            }
+            GpuShader::Divide => ShaderInfo::arithmetic("divide", include_str!("div/div.slang"), 3),
+            GpuShader::Maximum => {
+                ShaderInfo::arithmetic("maximum", include_str!("max/max.slang"), 3)
+            }
+            GpuShader::Minimum => {
+                ShaderInfo::arithmetic("minimum", include_str!("min/min.slang"), 3)
+            }
+            GpuShader::ReLU => ShaderInfo::arithmetic("relu", include_str!("relu/relu.slang"), 2),
+            GpuShader::Sigmoid => {
+                ShaderInfo::float("sigmoid", include_str!("sigmoid/sigmoid.slang"), 2)
+            }
+            GpuShader::Softmax => {
+                ShaderInfo::float("softmax", include_str!("softmax/softmax.slang"), 2)
+            }
+            GpuShader::Expand => {
+                ShaderInfo::arithmetic("expand", include_str!("expand/expand.slang"), 2)
+            }
+            GpuShader::ReduceMean => {
+                ShaderInfo::arithmetic("reducemean", include_str!("reducemean/reducemean.slang"), 2)
+            }
+            GpuShader::Shape_Write => ShaderInfo::new(
+                "shape_write",
+                include_str!("shape/shape.slang"),
+                1,
+                &[DataType::Int64],
+            ),
+            GpuShader::MaxPool_1D => {
+                ShaderInfo::arithmetic("maxpool_1d", include_str!("maxpool/maxpool_1d.slang"), 2)
+            }
+            GpuShader::MaxPool_2D => {
+                ShaderInfo::arithmetic("maxpool_2d", include_str!("maxpool/maxpool_2d.slang"), 2)
+            }
+            GpuShader::MaxPool_3D => {
+                ShaderInfo::arithmetic("maxpool_3d", include_str!("maxpool/maxpool_3d.slang"), 2)
+            }
+            GpuShader::Conv_1D => {
+                ShaderInfo::arithmetic("conv_1d", include_str!("conv/conv_1d.slang"), 4)
+            }
+            GpuShader::Conv_2D => {
+                ShaderInfo::arithmetic("conv_2d", include_str!("conv/conv_2d.slang"), 4)
+            }
+            GpuShader::Conv_3D => {
+                ShaderInfo::arithmetic("conv_3d", include_str!("conv/conv_3d.slang"), 4)
+            }
+            GpuShader::MatMul_1D2D => {
+                ShaderInfo::arithmetic("matmul_1d2d", include_str!("matmul/matmul_1d2d.slang"), 3)
+            }
+            GpuShader::MatMul_2D1D => {
+                ShaderInfo::arithmetic("matmul_2d1d", include_str!("matmul/matmul_2d1d.slang"), 3)
+            }
+            GpuShader::MatMul_2D2D => {
+                ShaderInfo::arithmetic("matmul_2d2d", include_str!("matmul/matmul_2d2d.slang"), 3)
+            }
+            GpuShader::MatMul_3D1D => {
+                ShaderInfo::arithmetic("matmul_3d1d", include_str!("matmul/matmul_3d1d.slang"), 3)
+            }
+            GpuShader::MatMul_1D3D => {
+                ShaderInfo::arithmetic("matmul_1d3d", include_str!("matmul/matmul_1d3d.slang"), 3)
+            }
+            GpuShader::MatMul_Tiled => {
+                ShaderInfo::arithmetic("matmul_tiled", include_str!("matmul/matmul_tiled.slang"), 3)
+            }
+            GpuShader::Gemm => ShaderInfo::arithmetic("gemm", include_str!("gemm/gemm.slang"), 4),
+            GpuShader::Gemm_Tiled => {
+                ShaderInfo::arithmetic("gemm_tiled", include_str!("gemm/gemm_tiled.slang"), 4)
+            }
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        self.info().name
     }
 
     pub fn binding_count(&self) -> usize {
-        match self {
-            GPUOperation::Addition => 3,
-            GPUOperation::Addition_NoStride => 3,
-            GPUOperation::Subtract => 3,
-            GPUOperation::Multiply => 3,
-            GPUOperation::Divide => 3,
-            GPUOperation::Maximum => 3,
-            GPUOperation::Minimum => 3,
-            GPUOperation::ReLU => 2,
-            GPUOperation::Sigmoid_FP32 | GPUOperation::Sigmoid_FP16 => 2,
-            GPUOperation::Expand => 2,
-            GPUOperation::ReduceMean => 2,
-            GPUOperation::Shape_Write => 1,
-            GPUOperation::MaxPool_1D => 2,
-            GPUOperation::MaxPool_2D => 2,
-            GPUOperation::MaxPool_3D => 2,
-            GPUOperation::Softmax_FP32 | GPUOperation::Softmax_FP16 => 2,
-            GPUOperation::Conv_1D => 4,
-            GPUOperation::Conv_2D => 4,
-            GPUOperation::Conv_3D => 4,
-            GPUOperation::MatMul_1D2D
-            | GPUOperation::MatMul_2D1D
-            | GPUOperation::MatMul_2D2D
-            | GPUOperation::MatMul_3D1D
-            | GPUOperation::MatMul_1D3D
-            | GPUOperation::MatMul_Tiled => 3,
-            GPUOperation::Gemm | GPUOperation::Gemm_Tiled => 4,
-        }
+        self.info().bindings
     }
 
     pub fn to_slang_shader(self) -> Result<&'static str, VKMLError> {
-        match self {
-            GPUOperation::Addition => Ok(include_str!("add/add.slang")),
-            GPUOperation::Addition_NoStride => Ok(include_str!("add/add_nostride.slang")),
-            GPUOperation::Subtract => Ok(include_str!("sub/sub.slang")),
-            GPUOperation::Multiply => Ok(include_str!("mul/mul.slang")),
-            GPUOperation::Divide => Ok(include_str!("div/div.slang")),
-            GPUOperation::Maximum => Ok(include_str!("max/max.slang")),
-            GPUOperation::Minimum => Ok(include_str!("min/min.slang")),
-            GPUOperation::ReLU => Ok(include_str!("relu/relu.slang")),
-            GPUOperation::Sigmoid_FP32 => Ok(include_str!("sigmoid/sigmoid_fp32.slang")),
-            GPUOperation::Sigmoid_FP16 => Ok(include_str!("sigmoid/sigmoid_fp16.slang")),
-            GPUOperation::Expand => Ok(include_str!("expand/expand.slang")),
-            GPUOperation::ReduceMean => Ok(include_str!("reducemean/reducemean.slang")),
-            GPUOperation::Shape_Write => Ok(include_str!("shape/shape.slang")),
-            GPUOperation::MaxPool_1D => Ok(include_str!("maxpool/maxpool_1d.slang")),
-            GPUOperation::MaxPool_2D => Ok(include_str!("maxpool/maxpool_2d.slang")),
-            GPUOperation::MaxPool_3D => Ok(include_str!("maxpool/maxpool_3d.slang")),
-            GPUOperation::Softmax_FP32 => Ok(include_str!("softmax/softmax_fp32.slang")),
-            GPUOperation::Softmax_FP16 => Ok(include_str!("softmax/softmax_fp16.slang")),
-            GPUOperation::Conv_1D => Ok(include_str!("conv/conv_1d.slang")),
-            GPUOperation::Conv_2D => Ok(include_str!("conv/conv_2d.slang")),
-            GPUOperation::Conv_3D => Ok(include_str!("conv/conv_3d.slang")),
-            GPUOperation::MatMul_1D2D => Ok(include_str!("matmul/matmul_1d2d.slang")),
-            GPUOperation::MatMul_2D1D => Ok(include_str!("matmul/matmul_2d1d.slang")),
-            GPUOperation::MatMul_2D2D => Ok(include_str!("matmul/matmul_2d2d.slang")),
-            GPUOperation::MatMul_3D1D => Ok(include_str!("matmul/matmul_3d1d.slang")),
-            GPUOperation::MatMul_1D3D => Ok(include_str!("matmul/matmul_1d3d.slang")),
-            GPUOperation::MatMul_Tiled => Ok(include_str!("matmul/matmul_tiled.slang")),
-            GPUOperation::Gemm => Ok(include_str!("gemm/gemm.slang")),
-            GPUOperation::Gemm_Tiled => Ok(include_str!("gemm/gemm_tiled.slang")),
-        }
+        Ok(self.info().source)
     }
 
-    pub fn is_fp_specialized(&self) -> bool {
-        matches!(
-            self,
-            GPUOperation::Sigmoid_FP32
-                | GPUOperation::Sigmoid_FP16
-                | GPUOperation::Softmax_FP32
-                | GPUOperation::Softmax_FP16
-        )
+    pub fn is_generic(&self) -> bool {
+        !matches!(self, GpuShader::Shape_Write)
+    }
+
+    pub fn min_shared_memory(&self) -> u32 {
+        match self {
+            GpuShader::MatMul_Tiled | GpuShader::Gemm_Tiled => 512,
+            _ => 0,
+        }
     }
 }

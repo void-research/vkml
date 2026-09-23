@@ -81,17 +81,13 @@ pub fn parse_onnx_model(
         .filter_map(|name| tensor_name_to_id.get(name).copied())
         .collect();
 
-    let tensor_to_layer = vec![None; tensor_descs.len()];
-    let operation_to_layer = vec![0; operations.len()];
-
     Ok((
         TensorGraph {
             tensor_descs,
             operations,
             input_tensor_ids,
             output_tensor_ids,
-            tensor_to_layer,
-            operation_to_layer,
+            operation_to_device: Vec::new(),
             memory_requirements,
         },
         initialisers,

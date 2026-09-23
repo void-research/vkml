@@ -1,12 +1,11 @@
 mod f32_f32_cpu;
 
 use crate::VKMLError;
-use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
     ComputeManager,
-    gpu::vk_gpu::Gpu,
-    instruction::{Instruction, gpu_operations::GPUOperation, relu::f32_f32_cpu::f32_f32_cpu},
-    tensor::TensorDesc,
+    gpu::Gpu,
+    instruction::{GpuShader, Instruction, relu::f32_f32_cpu::f32_f32_cpu},
+    tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,
 };
 
@@ -44,27 +43,23 @@ impl Instruction for ReLUInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        slang_iarithmetic_types()
-    }
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let src_desc = cm.tensor_desc(self.src);
+        let dst_desc = cm.tensor_desc(self.dst);
+        let dst_dtype = dst_desc.data_type();
 
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
-
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let src_tensor = cm.tensor_read(self.src);
-        let dst_tensor = cm.tensor_read(self.dst);
-        let src_dtype = src_tensor.desc().data_type();
-        let dst_dtype = dst_tensor.desc().data_type();
-
-        if src_dtype != dst_dtype {
-            return Err(VKMLError::Instruction(format!(
-                "GPU ReLU unimplemented for mixed DataType src:{:?}, dst:{:?}",
-                src_dtype, dst_dtype
-            )));
+        match target {
+            ComputeTarget::Gpu(gpu) => {
+                let compatible = src_desc.data_type() == dst_dtype
+                    && GpuShader::ReLU.info().can_run_on(gpu, dst_dtype);
+                Ok(compatible)
+            }
+            ComputeTarget::Cpu => {
+                let compatible =
+                    src_desc.data_type() == DataType::Float && dst_dtype == DataType::Float;
+                Ok(compatible)
+            }
         }
-        Ok(Some(GPUOperation::ReLU))
     }
 
     fn record_into_command_buffer(
@@ -72,17 +67,8 @@ impl Instruction for ReLUInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(GPUOperation::ReLU) => GPUOperation::ReLU,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for ReLU",
-                    op
-                )));
-            }
-        };
+        let op_name = GpuShader::ReLU;
 
         let src_tensor = cm.tensor_read(self.src);
         let src_mem = src_tensor.get_gpu_memory_or_panic();

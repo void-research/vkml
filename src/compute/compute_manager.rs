@@ -1,27 +1,21 @@
 use std::ptr::NonNull;
 use std::{mem, ptr};
 
-use crate::compute::{print_model_stats, print_tensorgraph_stats};
-use crate::gpu::{
-    pool::GpuPool,
-    vk_gpu::{Gpu, HostAccessMode},
-};
+use super::print_tensorgraph_stats;
+use crate::gpu::pool::GpuPool;
 use crate::instruction;
 use crate::onnx_parser::parse_onnx_model;
 use crate::scheduler::{ExecutionPlan, create_execution_plan, execute_plan};
 use crate::tensor::TensorCell;
-use crate::tensor::{DeviceId, Tensor};
+use crate::tensor::{ComputeTarget, Tensor};
 use crate::utils::error::VKMLError;
 use crate::weight_initialiser::Initialiser;
 use onnx_extractor::Model;
 use zero_pool::global_pool;
 
 use crate::instruction::Instruction;
+use crate::tensor::TensorDesc;
 use crate::tensor_graph::{DependencyGraph, OperationId, TensorGraph, TensorId};
-use crate::{
-    model::{graph_model::GraphModel, layer_connection::LayerId},
-    tensor::TensorDesc,
-};
 
 use super::cpu_compute::CPUCompute;
 use super::optimisations::Optimisations;
@@ -29,7 +23,6 @@ use super::optimisations::Optimisations;
 pub struct ComputeManager {
     pub tensors: Vec<TensorCell>,
 
-    pub model: GraphModel,
     pub tensor_graph: TensorGraph,
 
     gpus: GpuPool,
@@ -42,55 +35,6 @@ pub struct ComputeManager {
 }
 
 impl ComputeManager {
-    pub fn new_from_graph(model: GraphModel) -> Result<Self, VKMLError> {
-        Self::new_from_graph_with(model, None, None, Optimisations::default())
-    }
-
-    pub fn new_from_graph_with(
-        mut model: GraphModel,
-        explicit_gpus: Option<Vec<usize>>,
-        cpu_memory_limit_bytes: Option<u64>,
-        optimisations: Optimisations,
-    ) -> Result<Self, VKMLError> {
-        if model.verified.is_none() {
-            model.verify()?;
-        }
-
-        let cpu = CPUCompute::new(cpu_memory_limit_bytes);
-
-        let tensor_graph = TensorGraph::from_graph_model(&model)?;
-
-        let mut manager = Self {
-            tensors: Vec::new(),
-            model,
-            tensor_graph,
-            gpus: GpuPool::new(explicit_gpus)?,
-            cpu,
-            cached_plan: None,
-            cached_dependency_graph: None,
-            optimisations,
-        };
-
-        let total_memory = manager.tensor_graph.memory_requirements as u64;
-        let total_available: u64 = manager
-            .gpus
-            .gpus()
-            .iter()
-            .map(|gpu| gpu.memory_available())
-            .sum::<u64>()
-            + manager.cpu.memory_tracking.get_available();
-
-        if total_memory > total_available {
-            return Err(VKMLError::ComputeManager(format!(
-                "Model requires {} bytes but only {} available",
-                total_memory, total_available
-            )));
-        }
-
-        manager.allocate_tensor_graph(Vec::new())?;
-        Ok(manager)
-    }
-
     pub fn new_from_onnx_path(onnx_path: &str) -> Result<Self, VKMLError> {
         Self::new_from_onnx_path_with(onnx_path, None, None, 1, Optimisations::default())
     }
@@ -132,15 +76,10 @@ impl ComputeManager {
     ) -> Result<Self, VKMLError> {
         let cpu = CPUCompute::new(cpu_memory_limit_bytes);
 
-        // TODO: Implement one type of model representation.
-        // Placeholder minimal model until graph-only mode is supported
-        let model = GraphModel::new(1);
-
         let mut manager = Self {
             gpus,
             cpu,
             tensors: Vec::new(),
-            model,
             tensor_graph,
             cached_plan: None,
             cached_dependency_graph: None,
@@ -199,32 +138,35 @@ impl ComputeManager {
         let flattened_ops = &dep_graph.topological_order;
 
         // Track planned tensor locations: tensor_id -> DeviceLocation
-        let mut tensor_locations: Vec<Option<DeviceId>> =
+        let mut tensor_locations: Vec<Option<ComputeTarget>> =
             vec![None; self.tensor_graph.tensor_descs.len()];
 
         // Maintain a list of tensor remappings per tensor: tensor_id -> [(device, new_id)]
-        let mut tensor_remappings: Vec<Vec<(DeviceId, usize)>> =
+        let mut tensor_remappings: Vec<Vec<(ComputeTarget, usize)>> =
             vec![Vec::new(); self.tensor_graph.tensor_descs.len()];
 
         // Store remappings needed for operations: indexed by op_id
         let mut operation_remappings: Vec<Option<(Vec<TensorId>, Vec<TensorId>)>> =
             vec![None; self.tensor_graph.operations.len()];
 
-        // New tensors created for transfers or device-local outputs - including layer info
-        let mut new_tensors: Vec<(TensorDesc, DeviceId, Option<LayerId>)> = Vec::new();
+        // Track chosen device for operations: indexed by op_id
+        let mut original_op_devices: Vec<ComputeTarget> =
+            vec![ComputeTarget::Cpu; self.tensor_graph.operations.len()];
+
+        // New tensors created for transfers or device-local outputs
+        let mut new_tensors: Vec<(TensorDesc, ComputeTarget)> = Vec::new();
 
         // Transfer operations to insert: (insert_before_op, transfer_instr)
         let mut transfer_operations: Vec<(OperationId, Box<dyn Instruction>)> = Vec::new();
 
         // Track available memory per device (GPUs then CPU)
-        let mut available_memory: Vec<(DeviceId, u64)> = self
+        let mut available_memory: Vec<(ComputeTarget, u64)> = self
             .gpus
             .gpus()
             .iter()
-            .enumerate()
-            .map(|(i, g)| (DeviceId::Gpu(i), g.memory_available()))
+            .map(|g| (ComputeTarget::Gpu(g.clone()), g.memory_available()))
             .collect();
-        available_memory.push((DeviceId::Cpu, self.cpu.memory_tracking.get_available()));
+        available_memory.push((ComputeTarget::Cpu, self.cpu.memory_tracking.get_available()));
 
         let tensor_size = |tid: usize| self.tensor_graph.tensor_descs[tid].size_in_bytes() as u64;
 
@@ -233,45 +175,42 @@ impl ComputeManager {
             let input_tensors = instruction.get_input_tensor_ids();
             let output_tensors = instruction.get_output_tensor_ids();
 
-            let tid = output_tensors
-                .first()
-                .or_else(|| input_tensors.first())
-                .copied()
-                .expect("Operation must reference at least one tensor");
-            let dtype = self.tensor_graph.tensor_descs[tid].data_type();
+            let mut dev_idx_opt = None;
+            for (idx, (cand_device, available)) in available_memory.iter().enumerate() {
+                if !instruction.can_run_on(cand_device, self)? {
+                    continue;
+                }
 
-            let dev_idx = available_memory
-                .iter()
-                .position(|(cand_device, available)| {
-                    if !instruction.supports_device(*cand_device, dtype) {
-                        return false;
-                    }
-
-                    let mut needed = 0u64;
-                    for &tid in input_tensors.iter().chain(output_tensors.iter()) {
-                        match &tensor_locations[tid] {
-                            None => needed = needed.saturating_add(tensor_size(tid)),
-                            Some(loc)
-                                if loc != cand_device
-                                    && !tensor_remappings[tid]
-                                        .iter()
-                                        .any(|(d, _)| d == cand_device) =>
-                            {
-                                needed = needed.saturating_add(tensor_size(tid));
-                            }
-                            _ => {}
+                let mut needed = 0u64;
+                for &tid in input_tensors.iter().chain(output_tensors.iter()) {
+                    match &tensor_locations[tid] {
+                        None => needed = needed.saturating_add(tensor_size(tid)),
+                        Some(loc)
+                            if loc != cand_device
+                                && !tensor_remappings[tid]
+                                    .iter()
+                                    .any(|(d, _)| d == cand_device) =>
+                        {
+                            needed = needed.saturating_add(tensor_size(tid));
                         }
+                        _ => {}
                     }
-                    needed <= *available
-                })
-                .ok_or_else(|| {
-                    VKMLError::ComputeManager(format!(
-                        "Operation {:?} ({:?}, type: {:?}) cannot fit on any device or is unsupported",
-                        op_id, instruction, dtype
-                    ))
-                })?;
+                }
+                if needed <= *available {
+                    dev_idx_opt = Some(idx);
+                    break;
+                }
+            }
 
-            let current_device = available_memory[dev_idx].0;
+            let dev_idx = dev_idx_opt.ok_or_else(|| {
+                VKMLError::ComputeManager(format!(
+                    "Operation {:?} ({:?}) cannot fit on any device or is unsupported",
+                    op_id, instruction
+                ))
+            })?;
+
+            let current_device = available_memory[dev_idx].0.clone();
+            original_op_devices[op_id] = current_device.clone();
 
             // Prepare new input/output lists for remapping
             let mut remapping_needed = false;
@@ -281,7 +220,7 @@ impl ComputeManager {
                     match &tensor_locations[tid] {
                         None => {
                             // Allocate original tensor on this device
-                            tensor_locations[tid] = Some(current_device);
+                            tensor_locations[tid] = Some(current_device.clone());
                             available_memory[dev_idx].1 =
                                 available_memory[dev_idx].1.saturating_sub(tensor_size(tid));
                             result.push(tid);
@@ -297,29 +236,25 @@ impl ComputeManager {
                                 let new_tensor_id =
                                     self.tensor_graph.tensor_descs.len() + new_tensors.len();
                                 let original_desc = &self.tensor_graph.tensor_descs[tid];
-                                let original_layer_id = self.tensor_graph.tensor_to_layer[tid];
                                 let sz = original_desc.size_in_bytes() as u64;
 
                                 available_memory[dev_idx].1 =
                                     available_memory[dev_idx].1.saturating_sub(sz);
-                                new_tensors.push((
-                                    original_desc.clone(),
-                                    current_device,
-                                    original_layer_id,
-                                ));
+                                new_tensors.push((original_desc.clone(), current_device.clone()));
 
                                 if is_input {
-                                    let src_device = tensor_locations[tid].unwrap();
+                                    let src_device = tensor_locations[tid].clone().unwrap();
                                     let transfer_instr = instruction::transfer(
                                         tid,
                                         new_tensor_id,
                                         src_device,
-                                        current_device,
+                                        current_device.clone(),
                                     );
                                     transfer_operations.push((op_id, transfer_instr));
                                 }
 
-                                tensor_remappings[tid].push((current_device, new_tensor_id));
+                                tensor_remappings[tid]
+                                    .push((current_device.clone(), new_tensor_id));
                                 result.push(new_tensor_id);
                                 remapping_needed = true;
                             }
@@ -342,9 +277,8 @@ impl ComputeManager {
         // Note: We don't update memory_requirements here because transfer tensors are
         // implementation overhead from device placement, not part of the original model.
         // The model's memory_requirements reflects the original model size.
-        for (tensor_desc, device_location, layer_id) in new_tensors {
+        for (tensor_desc, device_location) in new_tensors {
             self.tensor_graph.tensor_descs.push(tensor_desc);
-            self.tensor_graph.tensor_to_layer.push(layer_id);
             tensor_locations.push(Some(device_location));
         }
 
@@ -362,28 +296,26 @@ impl ComputeManager {
         // 2. Rebuild operations list by interleaving transfer ops before their target op
         //    and applying remaps immediately
         let original_ops = std::mem::take(&mut self.tensor_graph.operations);
-        let original_op_layers = std::mem::take(&mut self.tensor_graph.operation_to_layer);
 
         // Prepare a per-op list of transfers
-        let mut transfers_for_op: Vec<Vec<(Box<dyn Instruction>, Option<LayerId>)>> =
+        let mut transfers_for_op: Vec<Vec<Box<dyn Instruction>>> =
             (0..original_ops.len()).map(|_| Vec::new()).collect();
 
         // Sort transfers to preserve deterministic order
         transfer_operations.sort_by_key(|(op_idx, _)| *op_idx);
         for (op_idx, transfer_instr) in transfer_operations.drain(..) {
-            let layer_id = original_op_layers[op_idx];
-            transfers_for_op[op_idx].push((transfer_instr, Some(layer_id)));
+            transfers_for_op[op_idx].push(transfer_instr);
         }
 
         let mut new_ops = Vec::with_capacity(
             original_ops.len() + transfers_for_op.iter().map(|v| v.len()).sum::<usize>(),
         );
-        let mut new_op_layers = Vec::with_capacity(new_ops.capacity());
+        let mut new_op_devices = Vec::with_capacity(new_ops.capacity());
 
         for (i, mut orig_op) in original_ops.into_iter().enumerate() {
             // Insert any transfers scheduled before this op
-            for (transfer_instr, layer_id) in transfers_for_op[i].drain(..) {
-                new_op_layers.push(layer_id);
+            for transfer_instr in transfers_for_op[i].drain(..) {
+                new_op_devices.push(ComputeTarget::Cpu);
                 new_ops.push(transfer_instr);
             }
 
@@ -394,57 +326,16 @@ impl ComputeManager {
                 orig_op.remap_tensor_ids(&new_inputs, &new_outputs);
             }
 
-            new_op_layers.push(Some(original_op_layers[i]));
+            new_op_devices.push(original_op_devices[i].clone());
             new_ops.push(orig_op);
         }
 
         // Replace graph ops with rebuilt lists
         self.tensor_graph.operations = new_ops;
-        // Convert Option<LayerId> into LayerId vector; any None shouldn't occur for originals
-        self.tensor_graph.operation_to_layer = new_op_layers
-            .into_iter()
-            .map(|opt| opt.expect("operation layer missing"))
-            .collect();
+        self.tensor_graph.operation_to_device = new_op_devices;
 
-        // Now that planning is complete, determine which tensors need to be host-visible.
-        // Inputs and outputs should remain host-visible so callers can read/write them.
-        let mut host_visible_plan = vec![false; self.tensor_graph.tensor_descs.len()];
-        let gpus = self.gpus.gpus();
-        let gpu_count = gpus.len();
-        if gpu_count > 0 {
-            let mut tensors_by_gpu = vec![Vec::<usize>::new(); gpu_count];
-            let mut total_gpu_bytes = vec![0u64; gpu_count];
-
-            for (tensor_id, location) in tensor_locations.iter().enumerate() {
-                if let Some(DeviceId::Gpu(idx)) = location {
-                    let bytes = self.tensor_graph.tensor_descs[tensor_id].size_in_bytes() as u64;
-                    tensors_by_gpu[*idx].push(tensor_id);
-                    total_gpu_bytes[*idx] = total_gpu_bytes[*idx].saturating_add(bytes);
-                }
-            }
-
-            let mut reserved_host_visible = vec![0u64; gpu_count];
-
-            for (idx, gpu) in gpus.iter().enumerate() {
-                let total_bytes = total_gpu_bytes[idx];
-                if total_bytes > 0 && gpu.host_visible_device_local_bytes() >= total_bytes {
-                    for &tensor_id in &tensors_by_gpu[idx] {
-                        host_visible_plan[tensor_id] = true;
-                    }
-                    reserved_host_visible[idx] = total_bytes;
-                    gpu.set_host_access_mode(HostAccessMode::DirectAllHostVisible);
-                } else {
-                    gpu.set_host_access_mode(HostAccessMode::DeviceLocalWithStaging);
-                }
-            }
-
-            for (idx, gpu) in gpus.iter().enumerate() {
-                gpu.set_host_visible_reserved(reserved_host_visible[idx]);
-            }
-        }
-
-        // Now actually allocate the tensors using the final host-visibility map.
-        self.allocate_tensors(tensor_locations, initialisers, &host_visible_plan);
+        // Now actually allocate the tensors.
+        self.allocate_tensors(tensor_locations, initialisers);
 
         // Cache the dependency graph and pre-compile the execution plan
         let new_dep_graph = self.tensor_graph.dependency_graph();
@@ -457,9 +348,8 @@ impl ComputeManager {
 
     fn allocate_tensors(
         &mut self,
-        tensor_locations: Vec<Option<DeviceId>>,
+        tensor_locations: Vec<Option<ComputeTarget>>,
         mut initialisers: Vec<Initialiser>,
-        host_visible_plan: &[bool],
     ) {
         let count = self.tensor_graph.tensor_descs.len();
 
@@ -475,7 +365,6 @@ impl ComputeManager {
                 manager_ptr,
                 out_ptrs: out_ptr,
                 tensor_locations_ptr: tensor_locations.as_ptr(),
-                host_visible_plan_ptr: host_visible_plan.as_ptr(),
             })
             .collect();
 
@@ -487,14 +376,13 @@ impl ComputeManager {
     pub fn allocate_tensor(
         &self,
         desc: &TensorDesc,
-        target_device: &DeviceId,
+        target_device: &ComputeTarget,
         initialiser: Initialiser,
-        host_visible: bool,
     ) -> Result<Tensor, VKMLError> {
         let expected_size = desc.size_in_bytes();
 
         match target_device {
-            DeviceId::Cpu => {
+            ComputeTarget::Cpu => {
                 self.cpu.memory_tracking.allocate(expected_size as u64);
 
                 let buffer = match initialiser {
@@ -512,37 +400,28 @@ impl ComputeManager {
 
                 Ok(Tensor::new_cpu(desc.clone(), buffer))
             }
-            DeviceId::Gpu(idx) => {
-                let gpu = &self.gpus.get_gpu(*idx);
+            ComputeTarget::Gpu(gpu) => match initialiser {
+                Initialiser::None => {
+                    let gpu_mem = gpu.allocate_uninitialised(expected_size)?;
 
-                match initialiser {
-                    Initialiser::None => {
-                        let gpu_mem =
-                            gpu.allocate_uninitialised_gpu_memory(expected_size, host_visible)?;
-
-                        Ok(Tensor::new_gpu(desc.clone(), *idx, gpu_mem))
-                    }
-                    _ => {
-                        let slice = initialiser.as_slice();
-
-                        if slice.len() != expected_size {
-                            return Err(VKMLError::ComputeManager(format!(
-                                "Initialiser size mismatch: expected {} got {}",
-                                expected_size,
-                                slice.len()
-                            )));
-                        }
-
-                        let gpu_mem = if host_visible {
-                            gpu.move_to_gpu_host_visible(slice)?
-                        } else {
-                            gpu.move_to_gpu_host_not_visible(slice)?
-                        };
-
-                        Ok(Tensor::new_gpu(desc.clone(), *idx, gpu_mem))
-                    }
+                    Ok(Tensor::new_gpu(desc.clone(), gpu_mem))
                 }
-            }
+                _ => {
+                    let slice = initialiser.as_slice();
+
+                    if slice.len() != expected_size {
+                        return Err(VKMLError::ComputeManager(format!(
+                            "Initialiser size mismatch: expected {} got {}",
+                            expected_size,
+                            slice.len()
+                        )));
+                    }
+
+                    let gpu_mem = gpu.allocate(slice)?;
+
+                    Ok(Tensor::new_gpu(desc.clone(), gpu_mem))
+                }
+            },
         }
     }
 
@@ -609,12 +488,8 @@ impl ComputeManager {
         execute_plan(self, plan)
     }
 
-    pub(crate) fn gpu_count(&self) -> usize {
-        self.gpus.gpus().len()
-    }
-
-    pub(crate) fn gpu_ref(&self, idx: usize) -> &Gpu {
-        self.gpus.get_gpu_ref(idx)
+    pub(crate) fn tensor_desc(&self, id: TensorId) -> &TensorDesc {
+        &self.tensor_graph.tensor_descs[id]
     }
 
     pub(crate) fn dependency_graph(&self) -> &DependencyGraph {
@@ -645,14 +520,6 @@ impl ComputeManager {
         }
 
         result
-    }
-
-    pub fn print_model_stats(&self) {
-        print_model_stats::print_model_stats(self);
-    }
-
-    pub fn print_layer_values(&self, layer_id: LayerId) -> Result<(), VKMLError> {
-        print_model_stats::print_layer_values(self, layer_id)
     }
 
     pub fn print_tensor_flow(&self) {
@@ -707,8 +574,7 @@ struct SingleAllocParams {
     initialisers_len: usize,
     manager_ptr: NonNull<ComputeManager>,
     out_ptrs: *mut TensorCell,
-    tensor_locations_ptr: *const Option<DeviceId>,
-    host_visible_plan_ptr: *const bool,
+    tensor_locations_ptr: *const Option<ComputeTarget>,
 }
 
 fn single_allocate_task(params: &SingleAllocParams) {
@@ -716,11 +582,12 @@ fn single_allocate_task(params: &SingleAllocParams) {
 
     let desc: &TensorDesc = &manager.tensor_graph.tensor_descs[params.index];
 
-    let target =
-        unsafe { (*params.tensor_locations_ptr.add(params.index)).unwrap_or(DeviceId::Cpu) };
-
-    // Read host-visible decision for this tensor from the shared array
-    let host_visible = unsafe { *params.host_visible_plan_ptr.add(params.index) };
+    let target = unsafe {
+        (&*params.tensor_locations_ptr.add(params.index))
+            .as_ref()
+            .cloned()
+            .unwrap_or(ComputeTarget::Cpu)
+    };
 
     // Take ownership of initialiser if within bounds, otherwise use None
     let initialiser = if params.index < params.initialisers_len {
@@ -729,9 +596,7 @@ fn single_allocate_task(params: &SingleAllocParams) {
         Initialiser::None
     };
 
-    let tensor = manager
-        .allocate_tensor(desc, &target, initialiser, host_visible)
-        .unwrap();
+    let tensor = manager.allocate_tensor(desc, &target, initialiser).unwrap();
 
     unsafe {
         let slot = params.out_ptrs.add(params.index);

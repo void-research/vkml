@@ -1,8 +1,7 @@
 use crate::{
     compute::compute_manager::ComputeManager,
     scheduler::{create_execution_plan, execution_plan::Executor},
-    tensor::DeviceId,
-    tensor_graph::TensorId,
+    tensor::ComputeTarget,
 };
 use std::collections::HashSet;
 
@@ -35,8 +34,8 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
 
     for (chunk_idx, chunk) in plan.chunks.iter().enumerate() {
         let (device_str, has_fence) = match &chunk.execution {
-            Executor::Cpu => ("CPU".to_string(), false),
-            Executor::Gpu { gpu_idx, fence, .. } => (format!("GPU {gpu_idx}"), fence.is_some()),
+            Executor::Cpu => ("CPU", false),
+            Executor::Gpu { gpu, fence, .. } => (gpu.device_name(), fence.is_some()),
         };
 
         let total_ops: usize = chunk.operation_layers.iter().map(|layer| layer.len()).sum();
@@ -59,26 +58,16 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
                 println!("  === Layer {} ({} ops) ===", layer_idx, layer.len());
             }
             for &op_id in layer {
-                let layer_id = cm.tensor_graph.operation_to_layer[op_id];
-
-                let layer_name = cm
-                    .model
-                    .layers
-                    .get(&layer_id)
-                    .map(|layer| layer.layer.name())
-                    .unwrap_or_else(|| "Unknown".to_string());
-
                 let instruction = format!("{:?}", cm.tensor_graph.operations[op_id]);
 
-                println!(
-                    "  Operation {} (Layer {:?} - {})",
-                    op_id, layer_id, layer_name
-                );
-                println!("  Instruction: {}", instruction);
+                let dev_str = match cm.tensor_graph.operation_to_device.get(op_id) {
+                    Some(ComputeTarget::Cpu) => "CPU",
+                    Some(ComputeTarget::Gpu(gpu)) => gpu.device_name(),
+                    None => "Unallocated",
+                };
 
-                if let Ok(Some(gpu_op)) = cm.tensor_graph.operations[op_id].pick_gpu_operation(cm) {
-                    println!("  GPU Operation: {:?}", gpu_op);
-                }
+                println!("  Operation {} (Device: {})", op_id, dev_str);
+                println!("  Instruction: {}", instruction);
 
                 let inputs = cm.tensor_graph.get_operation_inputs(op_id);
                 println!("  Inputs:");
@@ -87,10 +76,7 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
                     let dtype = format!("{:?}", tensor.desc().data_type());
                     let shape = format!("{:?}", tensor.desc().dims());
 
-                    let location = match tensor.device() {
-                        DeviceId::Cpu => "CPU".to_string(),
-                        DeviceId::Gpu(gpu_idx) => format!("GPU {}", gpu_idx),
-                    };
+                    let location = tensor.device_name();
 
                     let producers: String = cm
                         .tensor_graph
@@ -121,10 +107,7 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
                     let dtype = format!("{:?}", tensor.desc().data_type());
                     let shape = format!("{:?}", tensor.desc().dims());
 
-                    let location = match tensor.device() {
-                        DeviceId::Cpu => "CPU".to_string(),
-                        DeviceId::Gpu(gpu_idx) => format!("GPU {}", gpu_idx),
-                    };
+                    let location = tensor.device_name();
 
                     let consumers: Vec<String> = cm
                         .tensor_graph
@@ -151,90 +134,6 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
 
                 println!();
             }
-        }
-    }
-
-    // Sort layer IDs for consistent output
-    let mut layer_ids: Vec<_> = cm.model.layers.keys().cloned().collect();
-    layer_ids.sort();
-
-    for layer_id in &layer_ids {
-        if let Some(layer) = cm.model.layers.get(layer_id) {
-            let layer_name = layer.layer.name();
-            let layer_config = layer.layer.config_string().unwrap_or_default();
-
-            println!(
-                "Layer {}: {} {}",
-                layer_id,
-                layer_name,
-                if !layer_config.is_empty() {
-                    format!("({})", layer_config)
-                } else {
-                    String::new()
-                }
-            );
-
-            println!("  Input Connections:");
-            if layer.input_connections.is_empty() {
-                println!("    None (Input Layer)");
-            } else {
-                for (idx, conn) in layer.input_connections.iter().enumerate() {
-                    let source_id = conn.get_layerid();
-                    let output_idx = conn.get_outputidx();
-
-                    let source_name = cm
-                        .model
-                        .layers
-                        .get(&source_id)
-                        .map(|l| l.layer.name())
-                        .unwrap_or_else(|| "Unknown".to_string());
-
-                    println!(
-                        "    Connection {}: From Layer {} ({}) Output {}",
-                        idx, source_id, source_name, output_idx
-                    );
-                }
-            }
-
-            println!("  Output Connections:");
-            if layer.output_connections.is_empty() {
-                println!("    None (Output Layer)");
-            } else {
-                for (idx, conn) in layer.output_connections.iter().enumerate() {
-                    let target_id = conn.get_layerid();
-                    let input_idx = conn.get_outputidx();
-
-                    let target_name = cm
-                        .model
-                        .layers
-                        .get(&target_id)
-                        .map(|l| l.layer.name())
-                        .unwrap_or_else(|| "Unknown".to_string());
-
-                    println!(
-                        "    Connection {}: To Layer {} ({}) Input {}",
-                        idx, target_id, target_name, input_idx
-                    );
-                }
-            }
-
-            println!("  Tensors:");
-            let layer_tensors: Vec<TensorId> = (0..cm.tensors.len())
-                .filter(|&id| cm.tensor_graph.tensor_to_layer.get(id) == Some(&Some(*layer_id)))
-                .collect();
-
-            for tensor_id in layer_tensors {
-                let tensor = cm.tensor_read(tensor_id);
-
-                println!(
-                    "    Tensor {}: Shape {:?}, Size: {}",
-                    tensor_id,
-                    tensor.desc().dims(),
-                    cm.format_memory_mb(tensor.desc().size_in_bytes() as u64)
-                );
-            }
-
-            println!();
         }
     }
 

@@ -3,16 +3,15 @@ mod push_constants;
 
 use crate::ComputeManager;
 use crate::VKMLError;
-use crate::instruction::gpu_operations::GPUOperation;
+use crate::instruction::gpu_operations::GpuShader;
 use crate::instruction::maxpool::push_constants::{
     MaxPool1DPushConstants, MaxPool2DPushConstants, MaxPool3DPushConstants,
 };
-use crate::utils::dtype::slang_iarithmetic_types;
 use crate::utils::{OnnxAutoPad, as_bytes, calc_begin_and_end_pads};
 use crate::{
-    gpu::vk_gpu::Gpu,
+    gpu::Gpu,
     instruction::{Instruction, maxpool::f32_f32_cpu::f32_f32_cpu},
-    tensor::TensorDesc,
+    tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -41,6 +40,35 @@ impl MaxPoolInstruction {
             src_desc,
         );
         pb
+    }
+
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GpuShader> {
+        let src_desc = cm.tensor_desc(self.src);
+        let dst_desc = cm.tensor_desc(self.dst);
+
+        let spatial_rank = if src_desc.ndim() >= 2 {
+            src_desc.ndim() - 2
+        } else {
+            0
+        };
+
+        let shader = match spatial_rank {
+            0 | 1 => GpuShader::MaxPool_1D,
+            2 => GpuShader::MaxPool_2D,
+            3 => GpuShader::MaxPool_3D,
+            _ => return None,
+        };
+
+        let dtype = src_desc.data_type();
+        if dst_desc.data_type() != dtype {
+            return None;
+        }
+
+        if shader.info().can_run_on(gpu, dtype) {
+            Some(shader)
+        } else {
+            None
+        }
     }
 }
 
@@ -79,46 +107,25 @@ impl Instruction for MaxPoolInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        slang_iarithmetic_types()
-    }
-
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
-
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let src_tensor = cm.tensor_read(self.src);
-        let dst_tensor = cm.tensor_read(self.dst);
-
-        let src_dtype = src_tensor.desc().data_type();
-        let dst_dtype = dst_tensor.desc().data_type();
-
-        if src_dtype != dst_dtype {
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let src_desc = cm.tensor_desc(self.src);
+        let spatial_rank = src_desc.ndim().saturating_sub(2);
+        if !(1..=3).contains(&spatial_rank) {
             return Err(VKMLError::Instruction(format!(
-                "GPU MaxPool unimplemented for DataType src:{:?}, dst:{:?}",
-                src_dtype, dst_dtype
+                "MaxPool instruction {:?}: spatial rank must be 1, 2, or 3, got {}",
+                self, spatial_rank
             )));
         }
 
-        let src_desc = src_tensor.desc();
-        let spatial_rank = if src_desc.ndim() >= 2 {
-            src_desc.ndim() - 2
-        } else {
-            0
-        };
-        let gpu_op = match spatial_rank {
-            0 | 1 => GPUOperation::MaxPool_1D,
-            2 => GPUOperation::MaxPool_2D,
-            3 => GPUOperation::MaxPool_3D,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU MaxPool unsupported spatial rank {}",
-                    spatial_rank
-                )));
+        match target {
+            ComputeTarget::Gpu(gpu) => Ok(self.select_shader(gpu, cm).is_some()),
+            ComputeTarget::Cpu => {
+                let dst_desc = cm.tensor_desc(self.dst);
+                let compatible = src_desc.data_type() == DataType::Float
+                    && dst_desc.data_type() == DataType::Float;
+                Ok(compatible)
             }
-        };
-        Ok(Some(gpu_op))
+        }
     }
 
     fn record_into_command_buffer(
@@ -126,19 +133,14 @@ impl Instruction for MaxPoolInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(GPUOperation::MaxPool_1D) => GPUOperation::MaxPool_1D,
-            Some(GPUOperation::MaxPool_2D) => GPUOperation::MaxPool_2D,
-            Some(GPUOperation::MaxPool_3D) => GPUOperation::MaxPool_3D,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for MaxPool",
-                    op
-                )));
-            }
-        };
+        let op_name = self.select_shader(gpu, cm).ok_or_else(|| {
+            VKMLError::Instruction(format!(
+                "GPU MaxPool has no compatible shader for instruction {:?}",
+                self
+            ))
+        })?;
+
         // GPU implementation: bind src(0) and dst(2), push constants and dispatch.
         let src_tensor = cm.tensor_read(self.src);
         let dst_tensor = cm.tensor_read(self.dst);
@@ -149,17 +151,10 @@ impl Instruction for MaxPoolInstruction {
         let src_desc = src_tensor.desc();
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
 
-        // choose shader based on spatial rank
-        let spatial_rank = if src_desc.ndim() >= 2 {
-            src_desc.ndim() - 2
-        } else {
-            0
-        };
-
         let pb = self.compute_pads(src_desc);
 
-        match spatial_rank {
-            0 | 1 => {
+        match op_name {
+            GpuShader::MaxPool_1D => {
                 let src_dims = src_desc.dims();
                 let input_len = if src_dims.len() >= 3 {
                     src_dims[2] as u32
@@ -193,12 +188,17 @@ impl Instruction for MaxPoolInstruction {
 
                 let dst_dtype = dst_desc.data_type();
 
-                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
-                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
+                gpu.bind_slang_compute_pipeline(
+                    command_buffer,
+                    GpuShader::MaxPool_1D,
+                    dst_dtype,
+                    local_size,
+                );
+                gpu.bind_push_constants(command_buffer, GpuShader::MaxPool_1D, push_constant_bytes);
 
                 gpu.dispatch(command_buffer, local_size, [total, 1, 1]);
             }
-            2 => {
+            GpuShader::MaxPool_2D => {
                 let src_dims = src_desc.dims();
                 let dst_desc = dst_tensor.desc();
                 let dst_dims = dst_desc.dims();
@@ -231,12 +231,17 @@ impl Instruction for MaxPoolInstruction {
 
                 let dst_dtype = dst_desc.data_type();
 
-                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
-                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
+                gpu.bind_slang_compute_pipeline(
+                    command_buffer,
+                    GpuShader::MaxPool_2D,
+                    dst_dtype,
+                    local_size,
+                );
+                gpu.bind_push_constants(command_buffer, GpuShader::MaxPool_2D, push_constant_bytes);
 
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, batch_nc]);
             }
-            3 => {
+            GpuShader::MaxPool_3D => {
                 let src_dims = src_desc.dims();
                 let dst_desc = dst_tensor.desc();
                 let dst_dims = dst_desc.dims();
@@ -276,8 +281,13 @@ impl Instruction for MaxPoolInstruction {
 
                 let dst_dtype = dst_desc.data_type();
 
-                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
-                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
+                gpu.bind_slang_compute_pipeline(
+                    command_buffer,
+                    GpuShader::MaxPool_3D,
+                    dst_dtype,
+                    local_size,
+                );
+                gpu.bind_push_constants(command_buffer, GpuShader::MaxPool_3D, push_constant_bytes);
 
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, total_z]);
             }

@@ -1,3 +1,7 @@
+use vulkanalia::vk::{self, DeviceV1_0};
+
+use crate::gpu::Gpu;
+
 #[derive(Clone, Copy, Debug)]
 struct AxisState {
     axis: usize,
@@ -72,7 +76,6 @@ pub fn optimal_workgroup_size(
             }
 
             let new_product = product / axis.local_size.max(1) as u64 * next_size.max(1) as u64;
-
             let new_waste = projected_waste(&axes, idx, next_size, next_dispatches);
 
             let candidate = (idx, new_product, next_dispatches, next_size, new_waste);
@@ -140,4 +143,47 @@ fn total_product(axes: &[AxisState]) -> u64 {
     axes.iter().fold(1u64, |acc, axis| {
         acc.saturating_mul(axis.local_size.max(1) as u64)
     })
+}
+
+impl Gpu {
+    /// Calculate optimal workgroup size for 1D compute operations (element-wise ops)
+    pub fn optimal_workgroup_size_1d(&self, total_elements: u64) -> [u32; 3] {
+        optimal_workgroup_size(
+            self.max_workgroup_size(),
+            self.max_workgroup_invocations(),
+            [Some(total_elements), None, None],
+        )
+    }
+
+    /// Calculate optimal workgroup size for 2D compute operations (matmul, conv2d)
+    ///
+    /// Note: For batched 2D operations (e.g., batched matmul), use this function
+    /// and handle the batch dimension in the dispatch call, not the workgroup size.
+    /// Standard pattern: workgroup = [tile, tile], dispatch = [m/tile, n/tile, batch]
+    pub fn optimal_workgroup_size_2d(&self, rows: u64, cols: u64) -> [u32; 3] {
+        optimal_workgroup_size(
+            self.max_workgroup_size(),
+            self.max_workgroup_invocations(),
+            [Some(rows), Some(cols), None],
+        )
+    }
+
+    /// Calculate optimal workgroup size for 3D spatial operations (conv3d, maxpool3d)
+    pub fn optimal_workgroup_size_3d(&self, x: u64, y: u64, z: u64) -> [u32; 3] {
+        optimal_workgroup_size(
+            self.max_workgroup_size(),
+            self.max_workgroup_invocations(),
+            [Some(x), Some(y), Some(z)],
+        )
+    }
+
+    pub fn dispatch(&self, cb: vk::CommandBuffer, local_size: [u32; 3], work_size: [u64; 3]) {
+        let dispatch_x = work_size[0].div_ceil(local_size[0] as u64) as u32;
+        let dispatch_y = work_size[1].div_ceil(local_size[1] as u64) as u32;
+        let dispatch_z = work_size[2].div_ceil(local_size[2] as u64) as u32;
+        unsafe {
+            self.device
+                .cmd_dispatch(cb, dispatch_x, dispatch_y, dispatch_z);
+        }
+    }
 }

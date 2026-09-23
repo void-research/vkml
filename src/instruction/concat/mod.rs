@@ -1,14 +1,14 @@
 mod f32_cpu;
 
 use crate::{
-    ComputeManager, VKMLError,
-    gpu::vk_gpu::Gpu,
-    instruction::{GPUOperation, Instruction, concat::f32_cpu::f32_cpu},
+    ComputeManager,
+    instruction::{Instruction, concat::f32_cpu::f32_cpu},
+    tensor::ComputeTarget,
     tensor_graph::TensorId,
+    utils::error::VKMLError,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use vulkanalia::vk;
 
 pub struct ConcatInstruction {
     pub sources: Vec<TensorId>,
@@ -45,21 +45,33 @@ impl Instruction for ConcatInstruction {
         }
     }
 
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        if self.sources.is_empty() {
+            return Err(VKMLError::Instruction("Concat has no sources".into()));
+        }
 
-    fn record_into_command_buffer(
-        &self,
-        _gpu: &Gpu,
-        _command_buffer: vk::CommandBuffer,
-        _cm: &ComputeManager,
-        _op: Option<GPUOperation>,
-    ) -> Result<(), VKMLError> {
-        // Complex operation that would require custom shaders
-        Err(VKMLError::Instruction(
-            "GPU implementation of Concat not yet supported".to_string(),
-        ))
+        match target {
+            ComputeTarget::Gpu(_) => Ok(false),
+            ComputeTarget::Cpu => {
+                if self.dim != 1 {
+                    return Ok(false);
+                }
+                let first_desc = cm.tensor_desc(self.sources[0]);
+                if first_desc.dims().len() != 2 || first_desc.data_type() != DataType::Float {
+                    return Ok(false);
+                }
+                if cm.tensor_desc(self.dst).data_type() != DataType::Float {
+                    return Ok(false);
+                }
+                for &src_id in &self.sources {
+                    let desc = cm.tensor_desc(src_id);
+                    if desc.data_type() != DataType::Float || desc.dims().len() != 2 {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+        }
     }
 
     fn execute_cpu(&self, cm: &ComputeManager) {

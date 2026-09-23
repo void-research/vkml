@@ -17,7 +17,7 @@ impl MemoryTracker {
     }
 
     pub fn allocate(&self, size: u64) {
-        let prev = self.in_use.fetch_add(size, Ordering::Release);
+        let prev = self.in_use.fetch_add(size, Ordering::Relaxed);
 
         if prev + size > self.maximum {
             panic!(
@@ -27,8 +27,12 @@ impl MemoryTracker {
         }
     }
 
+    pub fn deallocate(&self, size: u64) {
+        self.in_use.fetch_sub(size, Ordering::Relaxed);
+    }
+
     pub fn get_current(&self) -> u64 {
-        self.in_use.load(Ordering::Acquire)
+        self.in_use.load(Ordering::Relaxed)
     }
 
     pub fn get_available(&self) -> u64 {

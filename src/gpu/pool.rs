@@ -1,4 +1,4 @@
-use std::{collections::HashSet, ffi::CString, ptr, sync::Arc};
+use std::{collections::HashSet, ptr, sync::Arc};
 
 use vulkanalia::{
     Entry, Instance,
@@ -7,7 +7,7 @@ use vulkanalia::{
 };
 use zero_pool::global_pool;
 
-use crate::{VKMLError, gpu::vk_gpu::Gpu, slang::SlangCompiler};
+use crate::{VKMLError, gpu::device::Gpu, slang::SlangCompiler};
 
 pub struct GpuPool {
     gpus: Vec<Arc<Gpu>>,
@@ -20,14 +20,12 @@ impl GpuPool {
             let loader = LibloadingLoader::new(LIBRARY).expect("Failed to load Vulkan library");
             let entry = Entry::new(loader).expect("Failed to create Vulkan entry point");
 
-            let aname = CString::new("vkml").unwrap();
-
             let appinfo = vk::ApplicationInfo {
                 s_type: vk::StructureType::APPLICATION_INFO,
                 next: ptr::null(),
-                application_name: aname.as_ptr(),
+                application_name: c"vkml".as_ptr(),
                 application_version: vk::make_version(0, 0, 1),
-                engine_name: aname.as_ptr(),
+                engine_name: c"vkml".as_ptr(),
                 engine_version: vk::make_version(0, 0, 1),
                 api_version: vk::make_version(1, 4, 0),
             };
@@ -48,70 +46,47 @@ impl GpuPool {
 
             let physical_devices = instance.enumerate_physical_devices()?;
 
-            // If selected is Some, iterate over those indices and validate them.
-            // Otherwise initialise every physical device found.
-            let init_gpus = if let Some(selected_set) = selected {
-                // validate all indices before spawning any tasks
-                let mut seen = HashSet::new();
-                let mut validated_indices = Vec::with_capacity(selected_set.len());
-
-                for &idx in selected_set.iter() {
-                    if idx >= physical_devices.len() {
-                        return Err(VKMLError::GpuPool(format!(
-                            "Selected GPU index {} out of range",
-                            idx
-                        )));
+            let devices: Vec<vk::PhysicalDevice> = match &selected {
+                Some(indices) => {
+                    let mut seen = HashSet::with_capacity(indices.len());
+                    let mut list = Vec::with_capacity(indices.len());
+                    for &idx in indices {
+                        if idx >= physical_devices.len() {
+                            return Err(VKMLError::GpuPool(format!(
+                                "Selected GPU index {idx} out of range"
+                            )));
+                        }
+                        if !seen.insert(idx) {
+                            return Err(VKMLError::GpuPool(format!(
+                                "Duplicate GPU index {idx} in selection"
+                            )));
+                        }
+                        list.push(physical_devices[idx]);
                     }
-
-                    if !seen.insert(idx) {
-                        return Err(VKMLError::GpuPool(format!(
-                            "Duplicate GPU index {} in selection",
-                            idx
-                        )));
-                    }
-
-                    validated_indices.push(idx);
+                    list
                 }
+                None => physical_devices,
+            };
 
-                let mut gpus = Vec::with_capacity(validated_indices.len());
+            let count = devices.len();
+            let mut gpus = Vec::with_capacity(count);
 
-                let tasks: Vec<GpuInitParams> = validated_indices
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &idx)| GpuInitParams {
-                        instance: instance.clone(),
-                        physical_device: physical_devices[idx],
-                        slang: slang.clone(),
-                        index: i,
-                        out_ptr: gpus.as_mut_ptr(),
-                    })
-                    .collect();
+            let tasks: Vec<GpuInitParams> = devices
+                .iter()
+                .enumerate()
+                .map(|(i, &physical_device)| GpuInitParams {
+                    instance: instance.clone(),
+                    physical_device,
+                    slang: slang.clone(),
+                    index: i,
+                    out_ptr: gpus.as_mut_ptr(),
+                })
+                .collect();
 
-                global_pool().run(gpu_init_task, &tasks);
+            global_pool().run(gpu_init_task, &tasks);
+            gpus.set_len(count);
 
-                gpus.set_len(validated_indices.len());
-
-                gpus
-            } else {
-                let count = physical_devices.len();
-                let mut gpus = Vec::with_capacity(count);
-
-                let tasks: Vec<GpuInitParams> = physical_devices
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &physical_device)| GpuInitParams {
-                        instance: instance.clone(),
-                        physical_device,
-                        slang: slang.clone(),
-                        index: i,
-                        out_ptr: gpus.as_mut_ptr(),
-                    })
-                    .collect();
-
-                global_pool().run(gpu_init_task, &tasks);
-
-                gpus.set_len(count);
-
+            if selected.is_none() {
                 // Sort GPUs: discrete GPUs first, then by total memory (descending)
                 gpus.sort_by_key(|gpu| {
                     (
@@ -119,79 +94,23 @@ impl GpuPool {
                         std::cmp::Reverse(gpu.memory_total()),
                     )
                 });
-
-                gpus
-            };
+            }
 
             Ok(Self {
-                gpus: init_gpus,
+                gpus,
                 _entry: entry,
             })
         }
     }
 
-    pub fn gpus(&self) -> &Vec<Arc<Gpu>> {
+    pub fn gpus(&self) -> &[Arc<Gpu>] {
         &self.gpus
-    }
-
-    pub fn get_gpu(&self, idx: usize) -> Arc<Gpu> {
-        self.gpus()
-            .get(idx)
-            .cloned()
-            .unwrap_or_else(|| panic!("Requested GPU index {idx} out of range"))
-    }
-
-    pub fn get_gpu_ref(&self, idx: usize) -> &Gpu {
-        self.gpus()
-            .get(idx)
-            .map(|g| g.as_ref())
-            .unwrap_or_else(|| panic!("Requested GPU index {idx} out of range"))
     }
 }
 
 impl std::fmt::Debug for GpuPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let gpu_debugs: Vec<String> = self
-            .gpus
-            .iter()
-            .map(|g| {
-                let staging_desc = match g.staging_buffer_info() {
-                    Some((size, props)) => format!(
-                        "Some {{ size_bytes: {}, properties: {:?} }}",
-                        size, props
-                    ),
-                    None => "None".to_string(),
-                };
-                format!(
-                    "{{ name: `{}`, device_type: {:?}, has_compute: {}, memory_budget: {}, memory_in_use: {}, memory_in_use_as_percent: {:.2}%, max_workgroup_count: {:?}, max_workgroup_size: {:?}, max_workgroup_invocations: {}, max_compute_queue_count: {}, max_shared_memory_size: {}, max_push_descriptors: {}, subgroup_size: {}, host_visible_device_local_bytes: {}, host_access_mode: {:?}, staging_buffer: {}, extensions: {:?} }}",
-                    g.name(),
-                    g.device_type(),
-                    g.has_compute(),
-                    g.memory_available(),
-                    g.memory_current(),
-                    if g.memory_total() == 0 {
-                        0.0
-                    } else {
-                        (g.memory_current() as f64 / g.memory_total() as f64) * 100.0
-                    },
-                    g.max_workgroup_count(),
-                    g.max_workgroup_size(),
-                    g.max_workgroup_invocations(),
-                    g.max_compute_queue_count(),
-                    g.max_shared_memory_size(),
-                    g.max_push_descriptors(),
-                    g.subgroup_size(),
-                    g.host_visible_device_local_bytes(),
-                    g.host_access_mode(),
-                    staging_desc,
-                    g.extensions(),
-                )
-            })
-            .collect();
-
-        f.debug_struct("GpuPool")
-            .field("gpus", &gpu_debugs)
-            .finish()
+        f.debug_struct("GpuPool").field("gpus", &self.gpus).finish()
     }
 }
 
@@ -205,7 +124,7 @@ struct GpuInitParams {
 
 fn gpu_init_task(params: &GpuInitParams) {
     let gpu = Arc::new(
-        Gpu::new_shared(
+        Gpu::new(
             params.instance.clone(),
             params.physical_device,
             params.slang.clone(),

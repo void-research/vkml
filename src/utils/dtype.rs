@@ -1,3 +1,5 @@
+use std::ffi::CStr;
+
 use onnx_extractor::DataType;
 use vk::ComponentTypeKHR as Ct;
 use vulkanalia::vk;
@@ -32,21 +34,21 @@ pub fn bool_to_vk_bool32(value: bool) -> vk::Bool32 {
 }
 
 /// Returns the Slang source code type string for a given ONNX DataType
-pub fn onnx_dtype_to_slang_type(dtype: DataType) -> &'static str {
+pub fn onnx_dtype_to_slang_type(dtype: DataType) -> &'static CStr {
     match dtype {
-        DataType::Float => "float",
-        DataType::Float16 => "half",
-        DataType::Double => "double",
-        DataType::Int8 => "int8_t",
-        DataType::Uint8 => "uint8_t",
-        DataType::Int16 => "int16_t",
-        DataType::Uint16 => "uint16_t",
-        DataType::Int32 => "int",
-        DataType::Uint32 => "uint",
-        DataType::Int64 => "int64_t",
-        DataType::Uint64 => "uint64_t",
-        DataType::Bool => "bool",
-        DataType::Bfloat16 => "bfloat16_t",
+        DataType::Float => c"float",
+        DataType::Float16 => c"half",
+        DataType::Double => c"double",
+        DataType::Int8 => c"int8_t",
+        DataType::Uint8 => c"uint8_t",
+        DataType::Int16 => c"int16_t",
+        DataType::Uint16 => c"uint16_t",
+        DataType::Int32 => c"int",
+        DataType::Uint32 => c"uint",
+        DataType::Int64 => c"int64_t",
+        DataType::Uint64 => c"uint64_t",
+        DataType::Bool => c"bool",
+        DataType::Bfloat16 => c"bfloat16_t",
         _ => unimplemented!(
             "Slang string mapping not implemented for ONNX datatype {:?}",
             dtype
@@ -54,40 +56,21 @@ pub fn onnx_dtype_to_slang_type(dtype: DataType) -> &'static str {
     }
 }
 
-// Datatypes that are not Undefined
-pub fn onnx_datatype_all_valid() -> &'static [DataType] {
-    &[
-        DataType::Float,
-        DataType::Float16,
-        DataType::Double,
-        DataType::Int8,
-        DataType::Uint8,
-        DataType::Int16,
-        DataType::Uint16,
-        DataType::Int32,
-        DataType::Uint32,
-        DataType::Int64,
-        DataType::Uint64,
-        DataType::Bool,
-        DataType::Bfloat16,
-        DataType::Float8e4m3fn,
-        DataType::Float8e5m2,
-    ]
-}
+/// All DataTypes supported by Slang's `IArithmetic` interface.
+/// (Excludes Bool, Bfloat16, Float8e4m3fn, Float8e5m2).
+pub const ARITHMETIC_TYPES: &[DataType] = &[
+    DataType::Float,
+    DataType::Float16,
+    DataType::Double,
+    DataType::Int8,
+    DataType::Uint8,
+    DataType::Int16,
+    DataType::Uint16,
+    DataType::Int32,
+    DataType::Uint32,
+    DataType::Int64,
+    DataType::Uint64,
+];
 
-// Not Bool, BF16, F8e4 or F8e5
-pub fn slang_iarithmetic_types() -> &'static [DataType] {
-    &[
-        DataType::Float,
-        DataType::Float16,
-        DataType::Double,
-        DataType::Int8,
-        DataType::Uint8,
-        DataType::Int16,
-        DataType::Uint16,
-        DataType::Int32,
-        DataType::Uint32,
-        DataType::Int64,
-        DataType::Uint64,
-    ]
-}
+/// All DataTypes supported by Slang's `__BuiltinFloatingPointType` interface.
+pub const FLOAT_TYPES: &[DataType] = &[DataType::Float, DataType::Float16, DataType::Double];

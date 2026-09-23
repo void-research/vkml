@@ -1,8 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use vulkanalia::vk::{self, DeviceV1_0};
 
 use crate::compute::compute_manager::ComputeManager;
-use crate::tensor::DeviceId;
+use crate::gpu::Gpu;
+use crate::tensor::ComputeTarget;
 use crate::tensor_graph::{OperationId, TensorId};
 use crate::utils::error::VKMLError;
 
@@ -11,7 +13,7 @@ pub type ChunkId = usize;
 pub enum Executor {
     Cpu,
     Gpu {
-        gpu_idx: usize,
+        gpu: Arc<Gpu>,
         command_buffer: vk::CommandBuffer,
         fence: Option<vk::Fence>,
     },
@@ -47,49 +49,33 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
     }
 
     let dep_graph = compute_manager.dependency_graph();
-    let cpu_slot = compute_manager.gpu_count();
 
     // 1. Cluster operations into chunks by target device and local dependencies
-    let mut chunk_devices: Vec<DeviceId> = Vec::new();
+    let mut chunk_targets: Vec<ComputeTarget> = Vec::new();
     let mut chunk_operations: Vec<Vec<OperationId>> = Vec::new();
     let mut op_to_chunk: Vec<ChunkId> = vec![usize::MAX; op_count];
-    let mut active_chunk_per_slot: Vec<Option<ChunkId>> = vec![None; cpu_slot + 1];
+    let mut active_chunk_per_target: HashMap<ComputeTarget, ChunkId> = HashMap::new();
 
     for &op in &dep_graph.topological_order {
-        let op_ref = &tensor_graph.operations[op];
-        let tensor_id = op_ref
-            .get_output_tensor_ids()
-            .first()
+        let target = &tensor_graph.operation_to_device[op];
+
+        let reuse_chunk = active_chunk_per_target
+            .get(target)
             .copied()
-            .or_else(|| op_ref.get_input_tensor_ids().first().copied())
-            .expect("Operation must reference at least one tensor");
-
-        let mut device = compute_manager.tensor_read(tensor_id).device();
-        let dtype = compute_manager.tensor_read(tensor_id).desc().data_type();
-
-        if !op_ref.supports_device(device, dtype) {
-            device = DeviceId::Cpu;
-        }
-
-        let slot = match device {
-            DeviceId::Gpu(idx) => idx,
-            DeviceId::Cpu => cpu_slot,
-        };
-
-        let reuse_chunk = active_chunk_per_slot[slot].and_then(|chunk_id| {
-            let all_local = dep_graph.predecessors[op]
-                .iter()
-                .all(|&pred| op_to_chunk[pred] == chunk_id);
-            if all_local { Some(chunk_id) } else { None }
-        });
+            .and_then(|chunk_id| {
+                let all_local = dep_graph.predecessors[op]
+                    .iter()
+                    .all(|&pred| op_to_chunk[pred] == chunk_id);
+                if all_local { Some(chunk_id) } else { None }
+            });
 
         let chunk_id = match reuse_chunk {
             Some(id) => id,
             None => {
                 let new_id = chunk_operations.len();
                 chunk_operations.push(Vec::new());
-                chunk_devices.push(device);
-                active_chunk_per_slot[slot] = Some(new_id);
+                chunk_targets.push(target.clone());
+                active_chunk_per_target.insert(target.clone(), new_id);
                 new_id
             }
         };
@@ -167,7 +153,7 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
         .zip(chunk_dependents)
         .enumerate()
     {
-        let device = chunk_devices[chunk_idx];
+        let target = &chunk_targets[chunk_idx];
         let is_output = is_output[chunk_idx];
         let operation_layers = organise_chunk_into_layers(
             &chunk_operations[chunk_idx],
@@ -176,30 +162,27 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
             op_count,
         );
 
-        let execution = match device {
-            DeviceId::Gpu(gpu_idx) => {
-                let needs_fence = is_output
-                    || dependents.iter().any(|&dep| match chunk_devices[dep] {
-                        DeviceId::Gpu(dep_gpu) => dep_gpu != gpu_idx,
-                        DeviceId::Cpu => true,
-                    });
+        let execution = match target {
+            ComputeTarget::Gpu(gpu) => {
+                let needs_fence =
+                    is_output || dependents.iter().any(|&dep| chunk_targets[dep] != *target);
 
                 let fence = if needs_fence {
-                    Some(compute_manager.gpu_ref(gpu_idx).create_fence()?)
+                    Some(gpu.create_fence()?)
                 } else {
                     None
                 };
 
                 let command_buffer =
-                    create_gpu_chunk_command_buffer(compute_manager, &operation_layers, gpu_idx)?;
+                    create_gpu_chunk_command_buffer(compute_manager, &operation_layers, gpu)?;
 
                 Executor::Gpu {
-                    gpu_idx,
+                    gpu: gpu.clone(),
                     command_buffer,
                     fence,
                 }
             }
-            DeviceId::Cpu => Executor::Cpu,
+            ComputeTarget::Cpu => Executor::Cpu,
         };
 
         chunks.push(ExecutionChunk {
@@ -221,10 +204,8 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
 fn create_gpu_chunk_command_buffer(
     compute_manager: &ComputeManager,
     operation_layers: &[Vec<OperationId>],
-    gpu_idx: usize,
+    gpu: &Arc<Gpu>,
 ) -> Result<vk::CommandBuffer, VKMLError> {
-    let gpu = compute_manager.gpu_ref(gpu_idx);
-
     let mut layer_reads = Vec::with_capacity(operation_layers.len());
     let mut layer_writes = Vec::with_capacity(operation_layers.len());
 
@@ -260,21 +241,24 @@ fn create_gpu_chunk_command_buffer(
             .allocate_command_buffers(&alloc_info)
             .map_err(|err| {
                 VKMLError::Gpu(format!(
-                    "Failed to allocate command buffer for chunk on GPU {}: {}",
-                    gpu_idx, err
+                    "Failed to allocate command buffer for chunk on {}: {}",
+                    gpu.device_name(),
+                    err
                 ))
             })?
             .pop()
             .ok_or_else(|| {
                 VKMLError::Gpu(format!(
-                    "No command buffer returned for chunk on GPU {gpu_idx}"
+                    "No command buffer returned for chunk on {}",
+                    gpu.device_name()
                 ))
             })?;
 
         gpu.begin_command_buffer(command_buffer, vk::CommandBufferUsageFlags::empty())
             .map_err(|err| {
                 VKMLError::Gpu(format!(
-                    "Failed to begin command buffer for GPU {gpu_idx}: {err}"
+                    "Failed to begin command buffer for {}: {err}",
+                    gpu.device_name()
                 ))
             })?;
 
@@ -282,10 +266,9 @@ fn create_gpu_chunk_command_buffer(
         for (layer_idx, layer) in operation_layers.iter().enumerate() {
             for &op_id in layer {
                 let instruction = compute_manager.tensor_graph.get_instruction_or_panic(op_id);
-                let op_opt = instruction.pick_gpu_operation(compute_manager)?;
 
                 instruction
-                    .record_into_command_buffer(&gpu, command_buffer, compute_manager, op_opt)
+                    .record_into_command_buffer(gpu, command_buffer, compute_manager)
                     .map_err(|err| {
                         VKMLError::Gpu(format!("Failed to record commands for op {op_id}: {err}"))
                     })?;
@@ -312,13 +295,6 @@ fn create_gpu_chunk_command_buffer(
                     }
 
                     let tensor = compute_manager.tensor_read(tensor_id);
-
-                    if tensor.device() != DeviceId::Gpu(gpu_idx) {
-                        return Err(VKMLError::Gpu(format!(
-                            "Tensor {tensor_id} referenced while recording GPU chunk for device {gpu_idx} is not backed by that GPU"
-                        )));
-                    }
-
                     let memory = tensor.get_gpu_memory_or_panic();
                     buffer_barriers.push(vk::BufferMemoryBarrier2 {
                         s_type: vk::StructureType::BUFFER_MEMORY_BARRIER_2,
@@ -348,7 +324,8 @@ fn create_gpu_chunk_command_buffer(
 
         gpu.end_command_buffer(command_buffer).map_err(|err| {
             VKMLError::Gpu(format!(
-                "Failed to end command buffer for GPU {gpu_idx}: {err}"
+                "Failed to end command buffer for {}: {err}",
+                gpu.device_name()
             ))
         })?;
 

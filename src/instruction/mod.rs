@@ -26,7 +26,7 @@ pub use conv::ConvInstruction;
 pub use div::DivInstruction;
 pub use expand::ExpandInstruction;
 pub use gemm::GemmInstruction;
-pub use gpu_operations::GPUOperation;
+pub use gpu_operations::GpuShader;
 pub use identity::IdentityInstruction;
 
 pub use matmul::MatMulInstruction;
@@ -44,9 +44,9 @@ pub use sub::SubInstruction;
 pub use transfer::TransferToDeviceInstruction;
 
 use crate::{
-    ComputeManager, DataType,
-    gpu::vk_gpu::Gpu,
-    tensor::DeviceId,
+    ComputeManager,
+    gpu::Gpu,
+    tensor::ComputeTarget,
     tensor_graph::TensorId,
     utils::{OnnxAutoPad, error::VKMLError},
 };
@@ -63,20 +63,8 @@ pub trait Instruction: Debug {
     // Remap tensor IDs (used during graph construction)
     fn remap_tensor_ids(&mut self, new_inputs: &[TensorId], new_outputs: &[TensorId]);
 
-    // Return the list of datatypes supported on GPU
-    fn gpu_supported_types(&self) -> &[DataType] {
-        &[]
-    }
-
-    // Return the list of datatypes supported on CPU
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[]
-    }
-
-    // Pick the specific GPUOperation to execute
-    fn pick_gpu_operation(&self, _cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        Ok(None)
-    }
+    // Check if this instruction can execute on the specified device with its tensor shapes, attributes, and dtypes
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError>;
 
     // Record this instruction into an already begun command buffer
     fn record_into_command_buffer(
@@ -84,7 +72,6 @@ pub trait Instruction: Debug {
         _gpu: &Gpu,
         _command_buffer: vk::CommandBuffer,
         _cm: &ComputeManager,
-        _op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
         Err(VKMLError::Instruction(format!(
             "GPU execution not implemented for {:?}",
@@ -95,16 +82,6 @@ pub trait Instruction: Debug {
     // Execute on CPU (default implementation returns error)
     fn execute_cpu(&self, _cm: &ComputeManager) {
         panic!("CPU execution not implemented for {:?}", self)
-    }
-}
-
-impl dyn Instruction {
-    // Check if this instruction supports running on `device` for data type `dtype`
-    pub fn supports_device(&self, device: DeviceId, dtype: DataType) -> bool {
-        match device {
-            DeviceId::Gpu(_) => self.gpu_supported_types().contains(&dtype),
-            DeviceId::Cpu => self.cpu_supported_types().contains(&dtype),
-        }
     }
 }
 
@@ -259,8 +236,8 @@ pub fn sub(src1: TensorId, src2: TensorId, dst: TensorId) -> Box<dyn Instruction
 pub fn transfer(
     src: TensorId,
     dst: TensorId,
-    source_device: DeviceId,
-    target_device: DeviceId,
+    source_device: ComputeTarget,
+    target_device: ComputeTarget,
 ) -> Box<dyn Instruction> {
     Box::new(TransferToDeviceInstruction {
         src,

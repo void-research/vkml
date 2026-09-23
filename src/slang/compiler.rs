@@ -1,4 +1,4 @@
-use crate::instruction::GPUOperation;
+use crate::instruction::GpuShader;
 use crate::slang::wrapper::{
     Blob, CompileTarget, CompilerOptions, ComponentType, FloatingPointMode, GlobalSession,
     OptimizationLevel, Session, SessionDesc, TargetDesc,
@@ -11,12 +11,12 @@ use std::sync::RwLock;
 
 struct SlangInner {
     session: Session,
-    module_cache: HashMap<GPUOperation, ComponentType>,
-    blob_cache: HashMap<(GPUOperation, DataType), Blob>,
+    module_cache: HashMap<GpuShader, ComponentType>,
+    blob_cache: HashMap<(GpuShader, DataType), Blob>,
 }
 
 impl SlangInner {
-    fn compile(&mut self, op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
+    fn compile(&mut self, op: GpuShader, dtype: DataType) -> Result<Blob, VKMLError> {
         let key = (op, dtype);
 
         if let Some(blob) = self.blob_cache.get(&key) {
@@ -36,7 +36,7 @@ impl SlangInner {
                     source_string,
                 )?;
 
-                let entry_point = module.find_entry_point_by_name("main").ok_or_else(|| {
+                let entry_point = module.find_entry_point_by_name(c"main").ok_or_else(|| {
                     VKMLError::Slang(format!(
                         "Entry point 'main' not found in module {module_name}"
                     ))
@@ -51,11 +51,11 @@ impl SlangInner {
             }
         };
 
-        let specialized_program = if op.is_fp_specialized() {
-            program
+        let specialized_program = if op.is_generic() {
+            let dtype_cstr = onnx_dtype_to_slang_type(dtype);
+            program.specialize_with_type_name(0, dtype_cstr)?
         } else {
-            let dtype_str = onnx_dtype_to_slang_type(dtype);
-            program.specialize_with_type_name(0, dtype_str)?
+            program
         };
 
         let linked_program = specialized_program.link()?;
@@ -76,7 +76,7 @@ impl SlangCompiler {
     pub fn new() -> Result<Self, VKMLError> {
         let global = GlobalSession::new()
             .ok_or_else(|| VKMLError::Slang("Failed to initialise Slang GlobalSession".into()))?;
-        let profile = global.find_profile("spirv_1_6");
+        let profile = global.find_profile(c"spirv_1_6");
 
         let options = CompilerOptions::default()
             .matrix_layout_row(true)
@@ -106,9 +106,9 @@ impl SlangCompiler {
         })
     }
 
-    /// Compiles a GPUOperation and DataType to SPIR-V blob.
+    /// Compiles a GpuShader and DataType to SPIR-V blob.
     /// Thread-safe, checks read lock before upgrading to write lock on cache miss.
-    pub fn compile(&self, op: GPUOperation, dtype: DataType) -> Result<Blob, VKMLError> {
+    pub fn compile(&self, op: GpuShader, dtype: DataType) -> Result<Blob, VKMLError> {
         let key = (op, dtype);
 
         // 1. Fast read lock check

@@ -8,15 +8,16 @@ PushConstants pc;
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void main(
-    StructuredBuffer<half> src,
-    RWStructuredBuffer<half> dst,
+void main<T : __BuiltinFloatingPointType>(
+    StructuredBuffer<T> src,
+    RWStructuredBuffer<T> dst,
     uint3 threadId: SV_DispatchThreadID)
 {
     uint idx = threadId.x;
     if (idx >= pc.total)
         return;
 
-    half val = src[idx];
-    dst[idx] = half(1.0) / (half(1.0) + exp(-val));
+    T val = src[idx];
+    dst[idx] = T(1.0) / (T(1.0) + exp(-val));
 }
+

@@ -7,14 +7,10 @@ mod utils;
 
 mod slang;
 
-mod gpu;
+pub mod gpu;
 
 mod compute;
 mod scheduler;
-
-mod model;
-
-mod layer;
 
 mod tensor;
 
@@ -29,9 +25,8 @@ mod weight_initialiser;
 pub use compute::compute_manager::ComputeManager;
 pub use compute::optimisations::Optimisations;
 pub use importers::onnx_parser;
-pub use layer::factory::Layers;
-pub use model::{graph_model::GraphModel, layer_connection::LayerConnection};
 pub use onnx_extractor::DataType;
 pub use tensor::Tensor;
 pub use tensor::TensorDesc;
+pub use tensor_graph::TensorGraph;
 pub use utils::error::VKMLError;

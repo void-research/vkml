@@ -5,11 +5,11 @@ use crate::VKMLError;
 use crate::instruction::gemm::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu;
 use crate::instruction::gemm::push_constants::GemmPushConstants;
 use crate::utils::bytes::as_bytes;
-use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
     ComputeManager,
-    gpu::vk_gpu::Gpu,
-    instruction::{Instruction, gpu_operations::GPUOperation},
+    gpu::Gpu,
+    instruction::{GpuShader, Instruction},
+    tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -28,6 +28,46 @@ pub struct GemmInstruction {
     pub beta: f32,
     pub trans_a: bool,
     pub trans_b: bool,
+}
+
+impl GemmInstruction {
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GpuShader> {
+        let a_desc = cm.tensor_desc(self.a);
+        let b_desc = cm.tensor_desc(self.b);
+        let y_desc = cm.tensor_desc(self.y);
+        let c_desc = self.c.map(|c| cm.tensor_desc(c));
+
+        let y_dtype = y_desc.data_type();
+        if a_desc.data_type() != y_dtype || b_desc.data_type() != y_dtype {
+            return None;
+        }
+        if let Some(c) = c_desc
+            && c.data_type() != y_dtype
+        {
+            return None;
+        }
+
+        let (m, _, n) = compute_gemm_dimensions(
+            a_desc.dims(),
+            b_desc.dims(),
+            y_desc.dims(),
+            self.trans_a,
+            self.trans_b,
+        )
+        .ok()?;
+
+        let shader = if gpu.max_shared_memory_size() >= 512 && (m as u64) >= 8 && (n as u64) >= 8 {
+            GpuShader::Gemm_Tiled
+        } else {
+            GpuShader::Gemm
+        };
+
+        if shader.info().can_run_on(gpu, y_dtype) {
+            Some(shader)
+        } else {
+            None
+        }
+    }
 }
 
 impl Debug for GemmInstruction {
@@ -67,58 +107,33 @@ impl Instruction for GemmInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        slang_iarithmetic_types()
-    }
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let a_desc = cm.tensor_desc(self.a);
+        let b_desc = cm.tensor_desc(self.b);
+        let y_desc = cm.tensor_desc(self.y);
 
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
+        compute_gemm_dimensions(
+            a_desc.dims(),
+            b_desc.dims(),
+            y_desc.dims(),
+            self.trans_a,
+            self.trans_b,
+        )?;
 
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let a_tensor = cm.tensor_read(self.a);
-        let b_tensor = cm.tensor_read(self.b);
-        let y_tensor = cm.tensor_read(self.y);
-        let c_tensor = self.c.map(|c| cm.tensor_read(c));
-
-        let a_dtype = a_tensor.desc().data_type();
-        let b_dtype = b_tensor.desc().data_type();
-        let c_dtype_opt = c_tensor.as_ref().map(|t| t.desc().data_type());
-        let y_dtype = y_tensor.desc().data_type();
-
-        if a_dtype != b_dtype
-            || a_dtype != y_dtype
-            || (c_dtype_opt.is_some() && c_dtype_opt != Some(a_dtype))
-        {
-            return Err(VKMLError::Instruction(format!(
-                "GPU GEMM unimplemented for mixed DataType a:{:?}, b:{:?}, c:{}, y:{:?}",
-                a_dtype,
-                b_dtype,
-                c_dtype_opt
-                    .map(|dt| format!("{:?}", dt))
-                    .unwrap_or_else(|| "None".to_string()),
-                y_dtype
-            )));
+        match target {
+            ComputeTarget::Gpu(gpu) => Ok(self.select_shader(gpu, cm).is_some()),
+            ComputeTarget::Cpu => {
+                let c_ok = match self.c {
+                    Some(c) => cm.tensor_desc(c).data_type() == DataType::Float,
+                    None => true,
+                };
+                let compatible = a_desc.data_type() == DataType::Float
+                    && b_desc.data_type() == DataType::Float
+                    && y_desc.data_type() == DataType::Float
+                    && c_ok;
+                Ok(compatible)
+            }
         }
-
-        let a_dims = a_tensor.desc().dims();
-        let b_dims = b_tensor.desc().dims();
-        let y_dims = y_tensor.desc().dims();
-
-        let (m, _, n) =
-            compute_gemm_dimensions(a_dims, b_dims, y_dims, self.trans_a, self.trans_b)?;
-
-        let gpu = cm.gpu_ref(0);
-        let max_shmem = gpu.max_shared_memory_size();
-
-        let m_u64 = m as u64;
-        let n_u64 = n as u64;
-
-        if max_shmem >= 512 && m_u64 >= 8 && n_u64 >= 8 {
-            return Ok(Some(GPUOperation::Gemm_Tiled));
-        }
-
-        Ok(Some(GPUOperation::Gemm))
     }
 
     fn record_into_command_buffer(
@@ -126,23 +141,18 @@ impl Instruction for GemmInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(GPUOperation::Gemm) => GPUOperation::Gemm,
-            Some(GPUOperation::Gemm_Tiled) => GPUOperation::Gemm_Tiled,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for Gemm",
-                    op
-                )));
-            }
-        };
+        let op_name = self.select_shader(gpu, cm).ok_or_else(|| {
+            VKMLError::Instruction(format!(
+                "GPU Gemm has no compatible shader for instruction {:?}",
+                self
+            ))
+        })?;
 
         let a_tensor = cm.tensor_read(self.a);
         let b_tensor = cm.tensor_read(self.b);
-        let c_tensor = self.c.map(|c| cm.tensor_read(c));
         let y_tensor = cm.tensor_read(self.y);
+        let c_tensor = self.c.map(|c| cm.tensor_read(c));
 
         let a_gpu_mem = a_tensor.get_gpu_memory_or_panic();
         let b_gpu_mem = b_tensor.get_gpu_memory_or_panic();
@@ -191,7 +201,7 @@ impl Instruction for GemmInstruction {
         let y_dtype = y_tensor.desc().data_type();
 
         match op_name {
-            GPUOperation::Gemm => {
+            GpuShader::Gemm => {
                 gpu.bind_slang_compute_pipeline(command_buffer, op_name, y_dtype, local_size);
                 gpu.bind_storage_buffers_optional(
                     command_buffer,
@@ -200,7 +210,7 @@ impl Instruction for GemmInstruction {
                 gpu.bind_push_constants(command_buffer, op_name, as_bytes(&pc));
                 gpu.dispatch(command_buffer, local_size, [n as u64, m as u64, 1]);
             }
-            GPUOperation::Gemm_Tiled => {
+            GpuShader::Gemm_Tiled => {
                 let max_shmem = gpu.max_shared_memory_size();
                 let m_u64 = m as u64;
                 let n_u64 = n as u64;
@@ -219,12 +229,12 @@ impl Instruction for GemmInstruction {
                     command_buffer,
                     &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
                 );
-                gpu.bind_push_constants(command_buffer, GPUOperation::Gemm, as_bytes(&pc));
+                gpu.bind_push_constants(command_buffer, GpuShader::Gemm, as_bytes(&pc));
                 gpu.dispatch(command_buffer, tiled_local_size, [n as u64, m as u64, 1]);
             }
             _ => {
                 return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for Gemm",
+                    "Invalid GpuShader {:?} for Gemm",
                     op_name
                 )));
             }

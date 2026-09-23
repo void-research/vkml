@@ -7,7 +7,7 @@ use shader_slang_sys::{
     slang_SpecializationArg, slang_SpecializationArg__bindgen_ty_1, slang_SpecializationArg_Kind,
     slang_TargetDesc,
 };
-use std::ffi::{CString, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::ptr::{NonNull, null, null_mut};
 
 /// COM ref-counted pointer. Clone calls addRef, Drop calls release.
@@ -124,11 +124,10 @@ impl GlobalSession {
         NonNull::new(ptr as *mut c_void).map(|nn| Self(ComPtr(nn)))
     }
 
-    pub fn find_profile(&self, name: &str) -> ProfileID {
-        let name_cs = CString::new(name).unwrap();
+    pub fn find_profile(&self, name: &CStr) -> ProfileID {
         unsafe {
             let vt = self.0.vtable::<IGlobalSessionVtable>();
-            ProfileID((vt.findProfile)(self.0.as_ptr(), name_cs.as_ptr()))
+            ProfileID((vt.findProfile)(self.0.as_ptr(), name.as_ptr()))
         }
     }
 
@@ -217,12 +216,11 @@ impl Session {
 pub struct Module(ComPtr);
 
 impl Module {
-    pub fn find_entry_point_by_name(&self, name: &str) -> Option<ComponentType> {
-        let name_cs = CString::new(name).unwrap();
+    pub fn find_entry_point_by_name(&self, name: &CStr) -> Option<ComponentType> {
         unsafe {
             let vt = self.0.vtable::<IModuleVtable>();
             let mut ptr: *mut slang_IEntryPoint = null_mut();
-            let hr = (vt.findEntryPointByName)(self.0.as_ptr(), name_cs.as_ptr(), &mut ptr);
+            let hr = (vt.findEntryPointByName)(self.0.as_ptr(), name.as_ptr(), &mut ptr);
             if hr < 0 || ptr.is_null() {
                 None
             } else {
@@ -244,15 +242,8 @@ impl ComponentType {
     pub fn specialize_with_type_name(
         &self,
         target_index: i64,
-        type_name: &str,
+        type_name: &CStr,
     ) -> Result<ComponentType, VKMLError> {
-        let type_name_cs = CString::new(type_name).map_err(|_| {
-            VKMLError::Slang(format!(
-                "Specialization type name contains interior NUL: {}",
-                type_name
-            ))
-        })?;
-
         unsafe {
             let vt = self.0.vtable::<IComponentTypeVtable>();
 
@@ -261,7 +252,7 @@ impl ComponentType {
             if layout.is_null() {
                 let msg = extract_diagnostics(layout_diag).unwrap_or_else(|| {
                     format!(
-                        "Failed to get Slang layout when specializing for type '{}'",
+                        "Failed to get Slang layout when specializing for type '{:?}'",
                         type_name
                     )
                 });
@@ -274,12 +265,12 @@ impl ComponentType {
 
             let type_reflection = shader_slang_sys::spReflection_FindTypeByName(
                 layout as *mut shader_slang_sys::SlangReflection,
-                type_name_cs.as_ptr(),
+                type_name.as_ptr(),
             );
 
             if type_reflection.is_null() {
                 return Err(VKMLError::Slang(format!(
-                    "Type '{}' not found in Slang reflection layout",
+                    "Type '{:?}' not found in Slang reflection layout",
                     type_name
                 )));
             }

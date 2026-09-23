@@ -66,11 +66,10 @@ impl<'a> ExecutionState<'a> {
 
         match &chunk.execution {
             Executor::Gpu {
-                gpu_idx,
+                gpu,
                 command_buffer,
                 fence,
             } => {
-                let gpu = compute_manager.gpu_ref(*gpu_idx);
                 gpu.submit_with_fence(&[*command_buffer], *fence)?;
 
                 if let Some(fence_handle) = *fence {

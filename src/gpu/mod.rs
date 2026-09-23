@@ -1,8 +1,9 @@
-pub mod allocator;
+pub mod device;
 pub mod extensions;
-pub mod gpu_memory;
+pub mod memory;
 pub mod pool;
-pub mod vk_gpu;
-pub mod workgroup;
 
+pub use device::{Gpu, HostAccessMode};
 pub use extensions::VkExtensions;
+pub use memory::GpuMemory;
+pub use pool::GpuPool;

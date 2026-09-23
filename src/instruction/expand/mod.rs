@@ -6,11 +6,10 @@ use crate::VKMLError;
 use crate::instruction::expand::f32_f32_cpu::f32_f32_cpu;
 use crate::instruction::expand::push_constants::ExpandPushConstants;
 use crate::utils::as_bytes;
-use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
-    gpu::vk_gpu::Gpu,
-    instruction::{Instruction, gpu_operations::GPUOperation},
-    tensor::TensorDesc,
+    gpu::Gpu,
+    instruction::{Instruction, gpu_operations::GpuShader},
+    tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -52,63 +51,31 @@ impl Instruction for ExpandInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        slang_iarithmetic_types()
-    }
-
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
-
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let src_tensor = cm.tensor_read(self.src);
-        let dst_tensor = cm.tensor_read(self.dst);
-
-        let src_desc = src_tensor.desc();
-        let dst_desc = dst_tensor.desc();
-
-        // Datatype verification
-        let src_dtype = src_desc.data_type();
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let src_desc = cm.tensor_desc(self.src);
+        let dst_desc = cm.tensor_desc(self.dst);
         let dst_dtype = dst_desc.data_type();
-        if src_dtype != dst_dtype {
+
+        if dst_desc.dims().len() > 8 {
             return Err(VKMLError::Instruction(format!(
-                "GPU Expand unimplemented for DataType src:{:?}, dst:{:?}",
-                src_dtype, dst_dtype
+                "Expand instruction {:?}: tensor rank exceeds max supported 8 (got {})",
+                self,
+                dst_desc.dims().len()
             )));
         }
 
-        let src_dims = src_desc.dims();
-        let dst_dims = dst_desc.dims();
-
-        let rank = dst_dims.len() as u32;
-        if rank > 8 {
-            return Err(VKMLError::Instruction(format!(
-                "Expand: tensor rank {} exceeds maximum supported rank of 8",
-                rank
-            )));
-        }
-
-        // Verify broadcast compatibility
-        let src_rank = src_dims.len();
-        let dst_rank = dst_dims.len();
-        let mut padded_src_dims = vec![1; dst_rank];
-        let offset = dst_rank.saturating_sub(src_rank);
-        for (i, &dim) in src_dims.iter().enumerate() {
-            padded_src_dims[offset + i] = dim;
-        }
-
-        for i in 0..dst_rank {
-            let src_dim = padded_src_dims[i];
-            let dst_dim = dst_dims[i];
-            if src_dim != dst_dim && src_dim != 1 {
-                return Err(VKMLError::Instruction(format!(
-                    "GPU Expand: dimension mismatch: src_dim={}, dst_dim={}",
-                    src_dim, dst_dim
-                )));
+        match target {
+            ComputeTarget::Gpu(gpu) => {
+                let compatible = src_desc.data_type() == dst_dtype
+                    && GpuShader::Expand.info().can_run_on(gpu, dst_dtype);
+                Ok(compatible)
+            }
+            ComputeTarget::Cpu => {
+                let compatible =
+                    src_desc.data_type() == DataType::Float && dst_dtype == DataType::Float;
+                Ok(compatible)
             }
         }
-
-        Ok(Some(GPUOperation::Expand))
     }
 
     fn record_into_command_buffer(
@@ -116,17 +83,8 @@ impl Instruction for ExpandInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(GPUOperation::Expand) => GPUOperation::Expand,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for Expand",
-                    op
-                )));
-            }
-        };
+        let shader = GpuShader::Expand;
 
         let src_tensor = cm.tensor_read(self.src);
         let src_mem = src_tensor.get_gpu_memory_or_panic();
@@ -168,9 +126,9 @@ impl Instruction for ExpandInstruction {
 
         let local_size = gpu.optimal_workgroup_size_1d(total_elements);
 
-        gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
+        gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-        gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
+        gpu.bind_push_constants(command_buffer, shader, push_constant_bytes);
 
         let num_elements: u64 = dst_dims_usize.iter().map(|d| *d as u64).product();
         gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);

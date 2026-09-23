@@ -1,14 +1,14 @@
 use crate::{
-    ComputeManager, DataType, instruction::Instruction, tensor::DeviceId, tensor_graph::TensorId,
-    utils::dtype::onnx_datatype_all_valid,
+    ComputeManager, instruction::Instruction, tensor::ComputeTarget, tensor_graph::TensorId,
+    utils::error::VKMLError,
 };
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
 pub struct TransferToDeviceInstruction {
     pub src: TensorId,
     pub dst: TensorId,
-    pub source_device: DeviceId,
-    pub target_device: DeviceId,
+    pub source_device: ComputeTarget,
+    pub target_device: ComputeTarget,
 }
 
 impl Debug for TransferToDeviceInstruction {
@@ -22,8 +22,8 @@ impl Debug for TransferToDeviceInstruction {
 }
 
 impl Instruction for TransferToDeviceInstruction {
-    fn cpu_supported_types(&self) -> &[DataType] {
-        onnx_datatype_all_valid()
+    fn can_run_on(&self, target: &ComputeTarget, _cm: &ComputeManager) -> Result<bool, VKMLError> {
+        Ok(matches!(target, ComputeTarget::Cpu))
     }
 
     fn get_input_tensor_ids(&self) -> Vec<TensorId> {

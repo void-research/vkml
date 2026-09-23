@@ -1,10 +1,10 @@
 mod push_constants;
 
 use crate::VKMLError;
-use crate::gpu::vk_gpu::Gpu;
-use crate::instruction::gpu_operations::GPUOperation;
+use crate::gpu::Gpu;
+use crate::instruction::gpu_operations::GpuShader;
 use crate::instruction::shape::push_constants::ShapePushConstants;
-use crate::tensor::TensorDesc;
+use crate::tensor::{ComputeTarget, TensorDesc};
 use crate::utils::as_bytes;
 use crate::{ComputeManager, instruction::Instruction, tensor_graph::TensorId};
 use onnx_extractor::DataType;
@@ -48,24 +48,26 @@ impl Instruction for ShapeInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Int64]
-    }
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let dst_desc = cm.tensor_desc(self.dst);
+        let dst_dtype = dst_desc.data_type();
 
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Int64]
-    }
-
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let dst_t = cm.tensor_read(self.dst);
-        let dst_dtype = dst_t.desc().data_type();
         if dst_dtype != DataType::Int64 {
             return Err(VKMLError::Instruction(format!(
-                "GPU Shape unimplemented for dst DataType: {:?}, expected Int64",
-                dst_dtype
+                "Shape instruction {:?}: destination tensor must be Int64, got {:?}",
+                self, dst_dtype
             )));
         }
-        Ok(Some(GPUOperation::Shape_Write))
+
+        match target {
+            ComputeTarget::Gpu(gpu) => {
+                let compatible = GpuShader::Shape_Write
+                    .info()
+                    .can_run_on(gpu, DataType::Int64);
+                Ok(compatible)
+            }
+            ComputeTarget::Cpu => Ok(true),
+        }
     }
 
     fn record_into_command_buffer(
@@ -73,17 +75,8 @@ impl Instruction for ShapeInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(GPUOperation::Shape_Write) => GPUOperation::Shape_Write,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for Shape",
-                    op
-                )));
-            }
-        };
+        let shader = GpuShader::Shape_Write;
 
         // Compute shape bytes on host, then upload to GPU via a host-visible staging buffer
         let src_desc = cm.tensor_read(self.src).desc().clone();
@@ -136,14 +129,13 @@ impl Instruction for ShapeInstruction {
         let dst_mem = dst_t.get_gpu_memory_or_panic();
         let dst_dtype = dst_t.desc().data_type();
 
-        let gpu_op = op_name;
         let local_size = gpu.optimal_workgroup_size_1d(slice_len as u64);
 
-        gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
+        gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[dst_mem]);
 
         let pc_bytes = as_bytes(&pc);
-        gpu.bind_push_constants(command_buffer, gpu_op, pc_bytes);
+        gpu.bind_push_constants(command_buffer, shader, pc_bytes);
 
         // Dispatch with one work item per shape element
         gpu.dispatch(command_buffer, local_size, [slice_len as u64, 1, 1]);

@@ -8,12 +8,11 @@ use crate::instruction::matmul::push_constants::{
     MatMul2D2DPushConstants, MatMul3D1DPushConstants, MatMulTiledPushConstants,
 };
 use crate::utils::bytes::as_bytes;
-use crate::utils::dtype::slang_iarithmetic_types;
 use crate::{
     ComputeManager,
-    gpu::vk_gpu::Gpu,
-    instruction::{Instruction, gpu_operations::GPUOperation},
-    tensor::Tensor,
+    gpu::Gpu,
+    instruction::{GpuShader, Instruction},
+    tensor::{ComputeTarget, Tensor},
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -24,6 +23,53 @@ pub struct MatMulInstruction {
     pub src1: TensorId,
     pub src2: TensorId,
     pub dst: TensorId,
+}
+
+impl MatMulInstruction {
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GpuShader> {
+        let src1_desc = cm.tensor_desc(self.src1);
+        let src2_desc = cm.tensor_desc(self.src2);
+        let dst_desc = cm.tensor_desc(self.dst);
+
+        let src1_dtype = src1_desc.data_type();
+        let src2_dtype = src2_desc.data_type();
+        let dst_dtype = dst_desc.data_type();
+
+        if src1_dtype != src2_dtype || src2_dtype != dst_dtype {
+            return None;
+        }
+
+        let a_rank = src1_desc.dims().len();
+        let b_rank = src2_desc.dims().len();
+
+        let mut op = match (a_rank, b_rank) {
+            (1, 2) => GpuShader::MatMul_1D2D,
+            (2, 1) => GpuShader::MatMul_2D1D,
+            (2, 2) => GpuShader::MatMul_2D2D,
+            (2, 3) | (3, 2) | (3, 3) => GpuShader::MatMul_Tiled,
+            (3, 1) => GpuShader::MatMul_3D1D,
+            (1, 3) => GpuShader::MatMul_1D3D,
+            _ => return None,
+        };
+
+        if op == GpuShader::MatMul_2D2D {
+            let m = src1_desc.dims()[0] as u64;
+            let n = src2_desc.dims()[1] as u64;
+            if m == 1 {
+                op = GpuShader::MatMul_1D2D;
+            } else if n == 1 {
+                op = GpuShader::MatMul_2D1D;
+            } else if gpu.max_shared_memory_size() >= 512 && m >= 8 && n >= 8 {
+                op = GpuShader::MatMul_Tiled;
+            }
+        }
+
+        if op.info().can_run_on(gpu, dst_dtype) {
+            Some(op)
+        } else {
+            None
+        }
+    }
 }
 
 impl Debug for MatMulInstruction {
@@ -46,8 +92,11 @@ impl Instruction for MatMulInstruction {
     }
 
     fn remap_tensor_ids(&mut self, new_inputs: &[TensorId], new_outputs: &[TensorId]) {
-        if new_inputs.len() >= 2 {
+        if !new_inputs.is_empty() {
             self.src1 = new_inputs[0];
+        }
+
+        if new_inputs.len() > 1 {
             self.src2 = new_inputs[1];
         }
 
@@ -56,53 +105,37 @@ impl Instruction for MatMulInstruction {
         }
     }
 
-    fn gpu_supported_types(&self) -> &[DataType] {
-        slang_iarithmetic_types()
-    }
+    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+        let src1_desc = cm.tensor_desc(self.src1);
+        let src2_desc = cm.tensor_desc(self.src2);
+        let dst_desc = cm.tensor_desc(self.dst);
 
-    fn cpu_supported_types(&self) -> &[DataType] {
-        &[DataType::Float]
-    }
+        let a_rank = src1_desc.dims().len();
+        let b_rank = src2_desc.dims().len();
 
-    fn pick_gpu_operation(&self, cm: &ComputeManager) -> Result<Option<GPUOperation>, VKMLError> {
-        let src1_tensor = cm.tensor_read(self.src1);
-        let src2_tensor = cm.tensor_read(self.src2);
-        let dst_tensor = cm.tensor_read(self.dst);
-
-        let src1_dtype = src1_tensor.desc().data_type();
-        let src2_dtype = src2_tensor.desc().data_type();
-        let dst_dtype = dst_tensor.desc().data_type();
-
-        let operation = determine_operation(
-            src1_tensor.desc().dims(),
-            src2_tensor.desc().dims(),
-            src1_dtype,
-            src2_dtype,
-            dst_dtype,
-        )?;
-
-        // If it's MatMul_2D2D, check for vector or tiled variants
-        if operation == GPUOperation::MatMul_2D2D {
-            let m = src1_tensor.desc().dims()[0] as u64;
-            let n = src2_tensor.desc().dims()[1] as u64;
-
-            // Batch size 1 / vector x matrix: use generic 1D GEMV shaders
-            if m == 1 {
-                return Ok(Some(GPUOperation::MatMul_1D2D));
-            }
-            if n == 1 {
-                return Ok(Some(GPUOperation::MatMul_2D1D));
-            }
-
-            let gpu = cm.gpu_ref(0);
-            let max_shmem = gpu.max_shared_memory_size();
-
-            if max_shmem >= 512 && m >= 8 && n >= 8 {
-                return Ok(Some(GPUOperation::MatMul_Tiled));
-            }
+        if a_rank == 0 || b_rank == 0 {
+            return Err(VKMLError::Instruction(format!(
+                "MatMul instruction {:?}: 0-rank tensors unsupported (a_rank={}, b_rank={})",
+                self, a_rank, b_rank
+            )));
         }
 
-        Ok(Some(operation))
+        if a_rank == 1 && b_rank == 1 {
+            return Err(VKMLError::Instruction(format!(
+                "MatMul instruction {:?}: 1D x 1D dot product unsupported (a_rank=1, b_rank=1)",
+                self
+            )));
+        }
+
+        match target {
+            ComputeTarget::Gpu(gpu) => Ok(self.select_shader(gpu, cm).is_some()),
+            ComputeTarget::Cpu => {
+                let compatible = src1_desc.data_type() == DataType::Float
+                    && src2_desc.data_type() == DataType::Float
+                    && dst_desc.data_type() == DataType::Float;
+                Ok(compatible)
+            }
+        }
     }
 
     fn record_into_command_buffer(
@@ -110,24 +143,13 @@ impl Instruction for MatMulInstruction {
         gpu: &Gpu,
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
-        op: Option<GPUOperation>,
     ) -> Result<(), VKMLError> {
-        let op_name = match op {
-            Some(
-                op @ (GPUOperation::MatMul_1D2D
-                | GPUOperation::MatMul_2D1D
-                | GPUOperation::MatMul_2D2D
-                | GPUOperation::MatMul_3D1D
-                | GPUOperation::MatMul_1D3D
-                | GPUOperation::MatMul_Tiled),
-            ) => op,
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GPUOperation {:?} for MatMul",
-                    op
-                )));
-            }
-        };
+        let op_name = self.select_shader(gpu, cm).ok_or_else(|| {
+            VKMLError::Instruction(format!(
+                "GPU MatMul has no compatible shader for instruction {:?}",
+                self
+            ))
+        })?;
 
         let src1_tensor = cm.tensor_read(self.src1);
         let src2_tensor = cm.tensor_read(self.src2);
@@ -191,48 +213,6 @@ impl Instruction for MatMulInstruction {
     }
 }
 
-/// Determine which GPU operation to use based on tensor dimensions and datatypes
-fn determine_operation(
-    src1_dims: &[i64],
-    src2_dims: &[i64],
-    src1_dtype: DataType,
-    src2_dtype: DataType,
-    dst_dtype: DataType,
-) -> Result<GPUOperation, VKMLError> {
-    let a_rank = src1_dims.len();
-    let b_rank = src2_dims.len();
-
-    if a_rank == 0 || b_rank == 0 {
-        return Err(VKMLError::Instruction(format!(
-            "MatMul: zero-rank tensor not supported (a_rank={}, b_rank={})",
-            a_rank, b_rank
-        )));
-    }
-
-    // Map (shape, datatypes) to GPUOperation
-    match (src1_dtype, src2_dtype, dst_dtype) {
-        (DataType::Float, DataType::Float, DataType::Float)
-        | (DataType::Float16, DataType::Float16, DataType::Float16) => match (a_rank, b_rank) {
-            (1, 2) => Ok(GPUOperation::MatMul_1D2D),
-            (2, 1) => Ok(GPUOperation::MatMul_2D1D),
-            (2, 2) => Ok(GPUOperation::MatMul_2D2D),
-            (2, 3) => Ok(GPUOperation::MatMul_Tiled),
-            (3, 2) => Ok(GPUOperation::MatMul_Tiled),
-            (3, 3) => Ok(GPUOperation::MatMul_Tiled),
-            (3, 1) => Ok(GPUOperation::MatMul_3D1D),
-            (1, 3) => Ok(GPUOperation::MatMul_1D3D),
-            _ => Err(VKMLError::Instruction(format!(
-                "Unsupported MatMul dimensions: a_rank:{}, b_rank:{}",
-                a_rank, b_rank
-            ))),
-        },
-        _ => Err(VKMLError::Instruction(format!(
-            "GPU MatMul unimplemented for DataType src1:{:?}, src2:{:?}, dst:{:?}",
-            src1_dtype, src2_dtype, dst_dtype
-        ))),
-    }
-}
-
 /// Execute GPU MatMul operation using specialised shaders
 fn execute_gpu_matmul(
     gpu: &Gpu,
@@ -240,7 +220,7 @@ fn execute_gpu_matmul(
     src1_tensor: &Tensor,
     src2_tensor: &Tensor,
     dst_tensor: &Tensor,
-    operation: GPUOperation,
+    operation: GpuShader,
 ) -> Result<(), VKMLError> {
     let src1_mem = src1_tensor.get_gpu_memory_or_panic();
     let src2_mem = src2_tensor.get_gpu_memory_or_panic();
@@ -257,7 +237,7 @@ fn execute_gpu_matmul(
     // Configure based on operation type
     // Pass actual output dimensions to optimal_workgroup_size_* and dispatch
     let (local_size, push_constants_bytes, work_size) = match operation {
-        GPUOperation::MatMul_1D2D => {
+        GpuShader::MatMul_1D2D => {
             // [1, k] or [k] × [k, n] → [1, n] or [n]
             let k = *src1_dims.last().unwrap();
             let n = src2_dims[1];
@@ -300,7 +280,7 @@ fn execute_gpu_matmul(
             }
         }
 
-        GPUOperation::MatMul_2D1D => {
+        GpuShader::MatMul_2D1D => {
             // [m, k] × [k, 1] or [k] → [m, 1] or [m]
             let m = src1_dims[0];
             let k = src1_dims[1];
@@ -343,7 +323,7 @@ fn execute_gpu_matmul(
             }
         }
 
-        GPUOperation::MatMul_2D2D => {
+        GpuShader::MatMul_2D2D => {
             // [m,k] × [k,n] → [m,n]
             let m = src1_dims[0];
             let k = src1_dims[1];
@@ -368,7 +348,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul_Tiled => {
+        GpuShader::MatMul_Tiled => {
             let a_rank = src1_dims.len();
             let b_rank = src2_dims.len();
 
@@ -524,7 +504,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul_3D1D => {
+        GpuShader::MatMul_3D1D => {
             // [batch,m,k] × [k] → [batch,m]
             let batch = src1_dims[0];
             let m = src1_dims[1];
@@ -549,7 +529,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GPUOperation::MatMul_1D3D => {
+        GpuShader::MatMul_1D3D => {
             // [k] × [batch,k,n] → [batch,n]
             let k = src1_dims[0];
             let batch = src2_dims[0];
