@@ -2,10 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use vulkanalia::vk::{self, DeviceV1_0};
 
+use crate::TensorGraph;
 use crate::compute::compute_manager::ComputeManager;
 use crate::gpu::Gpu;
 use crate::tensor::ComputeTarget;
-use crate::tensor_graph::{OperationId, TensorId};
+use crate::tensor_graph::{DependencyGraph, OperationId, TensorId};
 use crate::utils::error::VKMLError;
 
 pub type ChunkId = usize;
@@ -39,10 +40,18 @@ impl ExecutionPlan {
     }
 }
 
+// intermediate chunk representation during planning
+struct ClusteredChunk {
+    target: ComputeTarget,
+    operations: Vec<OperationId>,
+    predecessors: Vec<ChunkId>,
+    dependents: Vec<ChunkId>,
+    is_output: bool,
+}
+
 pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<ExecutionPlan, VKMLError> {
     let tensor_graph = &compute_manager.tensor_graph;
-    let op_count = tensor_graph.operations.len();
-    if op_count == 0 {
+    if tensor_graph.operations.is_empty() {
         return Err(VKMLError::GraphScheduler(
             "Scheduler cannot execute an empty graph".into(),
         ));
@@ -50,50 +59,88 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
 
     let dep_graph = compute_manager.dependency_graph();
 
-    // 1. Cluster operations into chunks by target device and local dependencies
-    let mut chunk_targets: Vec<ComputeTarget> = Vec::new();
-    let mut chunk_operations: Vec<Vec<OperationId>> = Vec::new();
+    // stage 1: group operations into target specific chunks
+    let (mut chunks, op_to_chunk) = cluster_operations_into_chunks(tensor_graph, dep_graph);
+
+    // stage 2: build chunk DAG and identify output chunks
+    let (root_chunks, output_chunks) =
+        build_chunk_dag_and_mark_outputs(&mut chunks, dep_graph, &op_to_chunk, tensor_graph)?;
+
+    // stage 3: assemble execution chunks (layering, fences, command buffers)
+    let execution_chunks = assemble_execution_chunks(chunks, compute_manager)?;
+
+    Ok(ExecutionPlan {
+        chunks: execution_chunks,
+        output_chunks,
+        root_chunks,
+    })
+}
+
+fn cluster_operations_into_chunks(
+    tensor_graph: &TensorGraph,
+    dep_graph: &DependencyGraph,
+) -> (Vec<ClusteredChunk>, Vec<ChunkId>) {
+    let op_count = tensor_graph.operations.len();
+    let mut chunks = Vec::new();
     let mut op_to_chunk: Vec<ChunkId> = vec![usize::MAX; op_count];
-    let mut active_chunk_per_target: HashMap<ComputeTarget, ChunkId> = HashMap::new();
+    let mut active_chunks: Vec<(ComputeTarget, ChunkId)> = Vec::new();
 
     for &op in &dep_graph.topological_order {
         let target = &tensor_graph.operation_to_device[op];
 
-        let reuse_chunk = active_chunk_per_target
-            .get(target)
-            .copied()
-            .and_then(|chunk_id| {
-                let all_local = dep_graph.predecessors[op]
-                    .iter()
-                    .all(|&pred| op_to_chunk[pred] == chunk_id);
-                if all_local { Some(chunk_id) } else { None }
-            });
+        // invariant: an operation can only be fused into the target's current active chunk
+        // if ALL of its predecessors are already members of that exact same chunk.
+        // if any predecessor was produced in an earlier chunk or on another device,
+        // we must start a new chunk to respect topological/synchronisation boundaries
+        let can_fuse = active_chunks
+            .iter()
+            .find(|(t, chunk_id)| {
+                t == target
+                    && dep_graph.predecessors[op]
+                        .iter()
+                        .all(|&pred| op_to_chunk[pred] == *chunk_id)
+            })
+            .map(|&(_, chunk_id)| chunk_id);
 
-        let chunk_id = match reuse_chunk {
+        let chunk_id = match can_fuse {
             Some(id) => id,
             None => {
-                let new_id = chunk_operations.len();
-                chunk_operations.push(Vec::new());
-                chunk_targets.push(target.clone());
-                active_chunk_per_target.insert(target.clone(), new_id);
-                new_id
+                let id = chunks.len();
+                chunks.push(ClusteredChunk {
+                    target: target.clone(),
+                    operations: Vec::new(),
+                    predecessors: Vec::new(),
+                    dependents: Vec::new(),
+                    is_output: false,
+                });
+                if let Some(slot) = active_chunks.iter_mut().find(|(t, _)| t == target) {
+                    slot.1 = id;
+                } else {
+                    active_chunks.push((target.clone(), id));
+                }
+                id
             }
         };
 
-        chunk_operations[chunk_id].push(op);
+        chunks[chunk_id].operations.push(op);
         op_to_chunk[op] = chunk_id;
     }
 
-    let chunk_count = chunk_operations.len();
+    (chunks, op_to_chunk)
+}
 
-    // 2. Build DAG dependencies between chunks
-    let mut chunk_predecessors: Vec<Vec<ChunkId>> = vec![Vec::new(); chunk_count];
-    let mut chunk_dependents: Vec<Vec<ChunkId>> = vec![Vec::new(); chunk_count];
-    let mut root_chunks: Vec<ChunkId> = Vec::new();
+fn build_chunk_dag_and_mark_outputs(
+    chunks: &mut [ClusteredChunk],
+    dep_graph: &DependencyGraph,
+    op_to_chunk: &[ChunkId],
+    tensor_graph: &TensorGraph,
+) -> Result<(Vec<ChunkId>, Vec<ChunkId>), VKMLError> {
+    // build predecessor lists and collect root chunks
+    let mut root_chunks = Vec::new();
 
-    for (chunk_idx, ops) in chunk_operations.iter().enumerate() {
-        let preds = &mut chunk_predecessors[chunk_idx];
-        for &op in ops {
+    for (chunk_idx, chunk) in chunks.iter_mut().enumerate() {
+        let mut preds = Vec::new();
+        for &op in &chunk.operations {
             for &pred_op in &dep_graph.predecessors[op] {
                 let pred_chunk = op_to_chunk[pred_op];
                 if pred_chunk != chunk_idx {
@@ -107,6 +154,7 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
         if preds.is_empty() {
             root_chunks.push(chunk_idx);
         }
+        chunk.predecessors = preds;
     }
 
     if root_chunks.is_empty() {
@@ -115,57 +163,60 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
         ));
     }
 
-    for (chunk_idx, preds) in chunk_predecessors.iter().enumerate() {
-        for &pred in preds {
-            chunk_dependents[pred].push(chunk_idx);
+    // derive dependent lists from predecessor lists
+    for chunk_idx in 0..chunks.len() {
+        let preds = chunks[chunk_idx].predecessors.clone();
+        for pred in preds {
+            chunks[pred].dependents.push(chunk_idx);
         }
     }
 
-    // 3. Detect output chunks
-    let output_tensors = tensor_graph.get_output_tensor_ids();
-    let mut is_output: Vec<bool> = chunk_operations
-        .iter()
-        .map(|ops| {
-            ops.iter().any(|&op_id| {
-                tensor_graph.operations[op_id]
-                    .get_output_tensor_ids()
-                    .iter()
-                    .any(|tid| output_tensors.contains(tid))
-            })
-        })
-        .collect();
+    // mark chunks that produce graph outputs
+    let output_set: HashSet<TensorId> = tensor_graph.output_tensor_ids.iter().copied().collect();
+    let mut output_chunks = Vec::new();
 
-    let mut output_chunks: Vec<ChunkId> = is_output
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, &out)| out.then_some(idx))
-        .collect();
-
-    if output_chunks.is_empty() {
-        is_output.fill(true);
-        output_chunks = (0..chunk_count).collect();
+    for (chunk_id, chunk) in chunks.iter_mut().enumerate() {
+        let produces_output = chunk.operations.iter().any(|&op| {
+            tensor_graph.operations[op]
+                .get_output_tensor_ids()
+                .iter()
+                .any(|tid| output_set.contains(tid))
+        });
+        if produces_output {
+            chunk.is_output = true;
+            output_chunks.push(chunk_id);
+        }
     }
 
-    // 4. Assemble execution chunks with operation layers, fences, and pre-recorded command buffers
-    let mut chunks = Vec::with_capacity(chunk_count);
-    for (chunk_idx, (predecessors, dependents)) in chunk_predecessors
-        .into_iter()
-        .zip(chunk_dependents)
-        .enumerate()
-    {
-        let target = &chunk_targets[chunk_idx];
-        let is_output = is_output[chunk_idx];
-        let operation_layers = organise_chunk_into_layers(
-            &chunk_operations[chunk_idx],
-            &dep_graph.predecessors,
-            &dep_graph.successors,
-            op_count,
-        );
+    if output_chunks.is_empty() {
+        for chunk in chunks.iter_mut() {
+            chunk.is_output = true;
+        }
+        output_chunks = (0..chunks.len()).collect();
+    }
 
-        let execution = match target {
+    Ok((root_chunks, output_chunks))
+}
+
+fn assemble_execution_chunks(
+    chunks: Vec<ClusteredChunk>,
+    compute_manager: &ComputeManager,
+) -> Result<Vec<ExecutionChunk>, VKMLError> {
+    let dep_graph = compute_manager.dependency_graph();
+    let chunk_targets: Vec<ComputeTarget> = chunks.iter().map(|c| c.target.clone()).collect();
+    let mut execution_chunks = Vec::with_capacity(chunks.len());
+
+    for chunk in chunks {
+        let operation_layers =
+            organise_chunk_into_layers(&chunk.operations, &dep_graph.predecessors);
+
+        let execution = match &chunk.target {
             ComputeTarget::Gpu(gpu) => {
-                let needs_fence =
-                    is_output || dependents.iter().any(|&dep| chunk_targets[dep] != *target);
+                let needs_fence = chunk.is_output
+                    || chunk
+                        .dependents
+                        .iter()
+                        .any(|&dep| chunk_targets[dep] != chunk.target);
 
                 let fence = if needs_fence {
                     Some(gpu.create_fence()?)
@@ -185,41 +236,63 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
             ComputeTarget::Cpu => Executor::Cpu,
         };
 
-        chunks.push(ExecutionChunk {
+        execution_chunks.push(ExecutionChunk {
             execution,
             operation_layers,
-            predecessors,
-            dependents,
-            is_output,
+            predecessors: chunk.predecessors,
+            dependents: chunk.dependents,
+            is_output: chunk.is_output,
         });
     }
 
-    Ok(ExecutionPlan {
-        chunks,
-        output_chunks,
-        root_chunks,
-    })
+    Ok(execution_chunks)
 }
 
+// chain is already in topological order
+fn organise_chunk_into_layers(
+    chain: &[OperationId],
+    predecessors: &[Vec<OperationId>],
+) -> Vec<Vec<OperationId>> {
+    if chain.is_empty() {
+        return Vec::new();
+    }
+    let mut op_layer: HashMap<OperationId, usize> = HashMap::with_capacity(chain.len());
+    let mut max_layer = 0;
+
+    for &op in chain {
+        let layer = predecessors[op]
+            .iter()
+            .filter_map(|pred| op_layer.get(pred))
+            .max()
+            .map_or(0, |&l| l + 1);
+
+        op_layer.insert(op, layer);
+        max_layer = max_layer.max(layer);
+    }
+
+    let mut layers = vec![Vec::new(); max_layer + 1];
+    for &op in chain {
+        layers[op_layer[&op]].push(op);
+    }
+    layers
+}
+
+// record GPU commands layer by layer with memory barriers
 fn create_gpu_chunk_command_buffer(
     compute_manager: &ComputeManager,
     operation_layers: &[Vec<OperationId>],
     gpu: &Arc<Gpu>,
 ) -> Result<vk::CommandBuffer, VKMLError> {
-    let mut layer_reads = Vec::with_capacity(operation_layers.len());
-    let mut layer_writes = Vec::with_capacity(operation_layers.len());
+    let mut layer_reads: Vec<HashSet<TensorId>> = Vec::with_capacity(operation_layers.len());
+    let mut layer_writes: Vec<HashSet<TensorId>> = Vec::with_capacity(operation_layers.len());
 
     for layer in operation_layers {
         let mut reads = HashSet::new();
         let mut writes = HashSet::new();
         for &op_id in layer {
             let instruction = compute_manager.tensor_graph.get_instruction_or_panic(op_id);
-            for tid in instruction.get_input_tensor_ids() {
-                reads.insert(tid);
-            }
-            for tid in instruction.get_output_tensor_ids() {
-                writes.insert(tid);
-            }
+            reads.extend(instruction.get_input_tensor_ids());
+            writes.extend(instruction.get_output_tensor_ids());
         }
         layer_reads.push(reads);
         layer_writes.push(writes);
@@ -238,14 +311,7 @@ fn create_gpu_chunk_command_buffer(
 
         let command_buffer = gpu
             .get_device()
-            .allocate_command_buffers(&alloc_info)
-            .map_err(|err| {
-                VKMLError::Gpu(format!(
-                    "Failed to allocate command buffer for chunk on {}: {}",
-                    gpu.device_name(),
-                    err
-                ))
-            })?
+            .allocate_command_buffers(&alloc_info)?
             .pop()
             .ok_or_else(|| {
                 VKMLError::Gpu(format!(
@@ -254,39 +320,31 @@ fn create_gpu_chunk_command_buffer(
                 ))
             })?;
 
-        gpu.begin_command_buffer(command_buffer, vk::CommandBufferUsageFlags::empty())
-            .map_err(|err| {
-                VKMLError::Gpu(format!(
-                    "Failed to begin command buffer for {}: {err}",
-                    gpu.device_name()
-                ))
-            })?;
+        gpu.begin_command_buffer(command_buffer, vk::CommandBufferUsageFlags::empty())?;
 
-        // Record operations layer by layer with barriers between layers
         for (layer_idx, layer) in operation_layers.iter().enumerate() {
             for &op_id in layer {
                 let instruction = compute_manager.tensor_graph.get_instruction_or_panic(op_id);
 
                 instruction
-                    .record_into_command_buffer(gpu, command_buffer, compute_manager)
-                    .map_err(|err| {
-                        VKMLError::Gpu(format!("Failed to record commands for op {op_id}: {err}"))
-                    })?;
+                    .record_into_command_buffer(gpu, command_buffer, compute_manager)?;
             }
 
             pending_writes.extend(layer_writes[layer_idx].iter().copied());
 
-            // Insert barrier between layers (but not after the last layer)
-            if layer_idx < operation_layers.len() - 1 {
+            // barriers between layers for RAW/WAW hazards
+            if layer_idx + 1 < operation_layers.len() {
+                let next_reads = &layer_reads[layer_idx + 1];
+                let next_writes = &layer_writes[layer_idx + 1];
                 let mut buffer_barriers = Vec::new();
                 let mut hazard_ids = Vec::new();
 
-                for &tensor_id in &pending_writes {
+                for &tensor_id in pending_writes.iter() {
                     let mut dst_access = vk::AccessFlags2::empty();
-                    if layer_reads[layer_idx + 1].contains(&tensor_id) {
+                    if next_reads.contains(&tensor_id) {
                         dst_access |= vk::AccessFlags2::SHADER_READ;
                     }
-                    if layer_writes[layer_idx + 1].contains(&tensor_id) {
+                    if next_writes.contains(&tensor_id) {
                         dst_access |= vk::AccessFlags2::SHADER_WRITE;
                     }
 
@@ -314,7 +372,7 @@ fn create_gpu_chunk_command_buffer(
 
                 if !buffer_barriers.is_empty() {
                     gpu.barrier_compute_shader_access(command_buffer, &buffer_barriers);
-
+                    // only remove entries with a barrier
                     for tensor_id in hazard_ids {
                         pending_writes.remove(&tensor_id);
                     }
@@ -322,64 +380,8 @@ fn create_gpu_chunk_command_buffer(
             }
         }
 
-        gpu.end_command_buffer(command_buffer).map_err(|err| {
-            VKMLError::Gpu(format!(
-                "Failed to end command buffer for {}: {err}",
-                gpu.device_name()
-            ))
-        })?;
+        gpu.end_command_buffer(command_buffer)?;
 
         Ok(command_buffer)
     }
-}
-
-fn organise_chunk_into_layers(
-    chain: &[OperationId],
-    predecessors: &[Vec<OperationId>],
-    successors: &[Vec<OperationId>],
-    op_count: usize,
-) -> Vec<Vec<OperationId>> {
-    if chain.is_empty() {
-        return Vec::new();
-    }
-    if chain.len() == 1 {
-        return vec![chain.to_vec()];
-    }
-
-    let mut in_degree = vec![0usize; op_count];
-    let chain_set: HashSet<OperationId> = chain.iter().copied().collect();
-
-    for &op in chain {
-        for &pred in &predecessors[op] {
-            if chain_set.contains(&pred) {
-                in_degree[op] += 1;
-            }
-        }
-    }
-
-    let mut layers = Vec::new();
-    let mut current_layer: Vec<OperationId> = chain
-        .iter()
-        .copied()
-        .filter(|&op| in_degree[op] == 0)
-        .collect();
-
-    while !current_layer.is_empty() {
-        let mut next_layer = Vec::new();
-        for &op in &current_layer {
-            for &succ in &successors[op] {
-                if !chain_set.contains(&succ) {
-                    continue;
-                }
-                in_degree[succ] = in_degree[succ].saturating_sub(1);
-                if in_degree[succ] == 0 {
-                    next_layer.push(succ);
-                }
-            }
-        }
-        layers.push(current_layer);
-        current_layer = next_layer;
-    }
-
-    layers
 }
