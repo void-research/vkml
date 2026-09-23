@@ -149,20 +149,20 @@ impl Instruction for MaxPoolInstruction {
         let dst_mem = dst_tensor.get_gpu_memory_or_panic();
 
         let src_desc = src_tensor.desc();
+        let src_dims = src_desc.dims();
+        let dst_desc = dst_tensor.desc();
+        let dst_dims = dst_desc.dims();
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
 
         let pb = self.compute_pads(src_desc);
 
         match op_name {
             GpuShader::MaxPool_1D => {
-                let src_dims = src_desc.dims();
                 let input_len = if src_dims.len() >= 3 {
                     src_dims[2] as u32
                 } else {
                     1
                 };
-                let dst_desc = dst_tensor.desc();
-                let dst_dims = dst_desc.dims();
                 let output_len = if dst_dims.len() >= 3 {
                     dst_dims[2] as u32
                 } else {
@@ -183,8 +183,8 @@ impl Instruction for MaxPoolInstruction {
                 let push_constant_bytes = as_bytes(&pc);
 
                 // choose local workgroup size and bind specialized pipeline
-                let total: u64 = (src_dims[0] as u64) * (src_dims[1] as u64) * (output_len as u64);
-                let local_size = gpu.optimal_workgroup_size_1d(total);
+                let total = (src_dims[0] as u32) * (src_dims[1] as u32) * output_len;
+                let local_size = gpu.workgroup_size_1d();
 
                 let dst_dtype = dst_desc.data_type();
 
@@ -199,10 +199,6 @@ impl Instruction for MaxPoolInstruction {
                 gpu.dispatch(command_buffer, local_size, [total, 1, 1]);
             }
             GpuShader::MaxPool_2D => {
-                let src_dims = src_desc.dims();
-                let dst_desc = dst_tensor.desc();
-                let dst_dims = dst_desc.dims();
-
                 let pc = MaxPool2DPushConstants {
                     n: src_dims[0] as u32,
                     c: src_dims[1] as u32,
@@ -223,11 +219,11 @@ impl Instruction for MaxPoolInstruction {
                 let push_constant_bytes = as_bytes(&pc);
 
                 // choose local tile size and bind specialized pipeline
-                let out_w = dst_dims[3] as u64;
-                let out_h = dst_dims[2] as u64;
-                let batch_nc = (dst_dims[0] as u64) * (dst_dims[1] as u64); // n * c
+                let out_w = dst_dims[3] as u32;
+                let out_h = dst_dims[2] as u32;
+                let batch_nc = (dst_dims[0] as u32) * (dst_dims[1] as u32); // n * c
 
-                let local_size = gpu.optimal_workgroup_size_2d(out_h, out_w);
+                let local_size = gpu.workgroup_size_2d();
 
                 let dst_dtype = dst_desc.data_type();
 
@@ -242,10 +238,6 @@ impl Instruction for MaxPoolInstruction {
                 gpu.dispatch(command_buffer, local_size, [out_w, out_h, batch_nc]);
             }
             GpuShader::MaxPool_3D => {
-                let src_dims = src_desc.dims();
-                let dst_desc = dst_tensor.desc();
-                let dst_dims = dst_desc.dims();
-
                 let pc = MaxPool3DPushConstants {
                     n: src_dims[0] as u32,
                     c: src_dims[1] as u32,
@@ -271,13 +263,13 @@ impl Instruction for MaxPoolInstruction {
 
                 let push_constant_bytes = as_bytes(&pc);
 
-                let out_w = dst_dims[4] as u64;
-                let out_h = dst_dims[3] as u64;
-                let out_d = dst_dims[2] as u64;
+                let out_w = dst_dims[4] as u32;
+                let out_h = dst_dims[3] as u32;
+                let out_d = dst_dims[2] as u32;
 
-                let total_z = out_d * (dst_dims[0] as u64) * (dst_dims[1] as u64);
+                let total_z = out_d * (dst_dims[0] as u32) * (dst_dims[1] as u32);
 
-                let local_size = gpu.optimal_workgroup_size_3d(out_w, out_h, out_d);
+                let local_size = gpu.workgroup_size_3d();
 
                 let dst_dtype = dst_desc.data_type();
 

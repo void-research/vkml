@@ -79,7 +79,7 @@ impl Instruction for SigmoidInstruction {
         let num_elements = dst_tensor.desc().num_elements();
         let dst_dtype = dst_tensor.desc().data_type();
 
-        let local_size = [256, 1, 1];
+        let local_size = gpu.workgroup_size_1d();
 
         gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
@@ -87,7 +87,7 @@ impl Instruction for SigmoidInstruction {
         let pc_data = (num_elements as u32).to_ne_bytes();
         gpu.bind_push_constants(command_buffer, op_name, &pc_data);
 
-        gpu.dispatch(command_buffer, local_size, [num_elements as u64, 1, 1]);
+        gpu.dispatch(command_buffer, local_size, [num_elements as u32, 1, 1]);
 
         Ok(())
     }

@@ -111,12 +111,12 @@ impl Instruction for ExpandInstruction {
             strides_src_arr[i] = s as u32;
         }
 
-        let total_elements: u64 = dst_dims_usize.iter().map(|d| *d as u64).product();
+        let num_elements = dst_desc.num_elements() as u32;
 
         let push_const_values = ExpandPushConstants {
             rank,
             pad: 0,
-            total: total_elements as u32,
+            total: num_elements,
             dims: dims_arr,
             strides_src: strides_src_arr,
         };
@@ -124,13 +124,12 @@ impl Instruction for ExpandInstruction {
         let push_constant_bytes = as_bytes(&push_const_values);
         let dst_dtype = dst_desc.data_type();
 
-        let local_size = gpu.optimal_workgroup_size_1d(total_elements);
+        let local_size = gpu.workgroup_size_1d();
 
         gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
         gpu.bind_push_constants(command_buffer, shader, push_constant_bytes);
 
-        let num_elements: u64 = dst_dims_usize.iter().map(|d| *d as u64).product();
         gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);
 
         Ok(())

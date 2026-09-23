@@ -120,7 +120,7 @@ impl Instruction for SoftmaxInstruction {
         gpu.dispatch(
             command_buffer,
             local_size,
-            [batch_size as u64 * local_size[0] as u64, 1, 1],
+            [(batch_size * local_size[0] as usize) as u32, 1, 1],
         );
 
         Ok(())

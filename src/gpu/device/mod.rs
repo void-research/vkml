@@ -310,6 +310,10 @@ impl Gpu {
         self.properties.limits.max_compute_shared_memory_size
     }
 
+    pub fn subgroup_size(&self) -> u32 {
+        self.subgroup_properties.subgroup_size.max(1)
+    }
+
     pub fn supports_subgroup_operations(&self) -> bool {
         self.subgroup_properties
             .supported_operations

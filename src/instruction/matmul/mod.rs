@@ -235,7 +235,7 @@ fn execute_gpu_matmul(
     let dst_dtype = dst_tensor.desc().data_type();
 
     // Configure based on operation type
-    // Pass actual output dimensions to optimal_workgroup_size_* and dispatch
+    // Pass actual output dimensions to dispatch
     let (local_size, push_constants_bytes, work_size) = match operation {
         GpuShader::MatMul_1D2D => {
             // [1, k] or [k] × [k, n] → [1, n] or [n]
@@ -251,31 +251,30 @@ fn execute_gpu_matmul(
                 stride_c: *dst_strides.last().unwrap() as u32,
             };
 
-            let max_threads = gpu
-                .max_workgroup_invocations()
-                .min(gpu.max_workgroup_size()[1]);
-            let reduce_threads = if max_threads >= 256 {
-                1 << (31 - max_threads.leading_zeros())
-            } else {
-                max_threads
-            };
-            let wide_threads = gpu.max_workgroup_size()[0]
-                .min(gpu.max_workgroup_invocations())
-                .min(256);
-
             if n >= 64 {
                 // Wide output: 1 thread per column, wide_threads columns per workgroup
+                let wide_threads = gpu.max_workgroup_size()[0]
+                    .min(gpu.max_workgroup_invocations())
+                    .min(256);
                 (
                     [wide_threads, 1, 1],
                     as_bytes(&pc).to_vec(),
-                    [n as u64, 1, 1],
+                    [n as u32, 1, 1],
                 )
             } else {
                 // Narrow output: 1 column per workgroup, reduce_threads along K
+                let max_threads = gpu
+                    .max_workgroup_invocations()
+                    .min(gpu.max_workgroup_size()[1]);
+                let reduce_threads = if max_threads >= 256 {
+                    1 << (31 - max_threads.leading_zeros())
+                } else {
+                    max_threads
+                };
                 (
                     [1, reduce_threads, 1],
                     as_bytes(&pc).to_vec(),
-                    [n as u64, reduce_threads as u64, 1],
+                    [n as u32, reduce_threads, 1],
                 )
             }
         }
@@ -294,31 +293,30 @@ fn execute_gpu_matmul(
                 stride_c: *dst_strides.last().unwrap() as u32,
             };
 
-            let max_threads = gpu
-                .max_workgroup_invocations()
-                .min(gpu.max_workgroup_size()[1]);
-            let reduce_threads = if max_threads >= 256 {
-                1 << (31 - max_threads.leading_zeros())
-            } else {
-                max_threads
-            };
-            let wide_threads = gpu.max_workgroup_size()[0]
-                .min(gpu.max_workgroup_invocations())
-                .min(256);
-
             if m >= 64 {
                 // Wide output: 1 thread per row, wide_threads rows per workgroup
+                let wide_threads = gpu.max_workgroup_size()[0]
+                    .min(gpu.max_workgroup_invocations())
+                    .min(256);
                 (
                     [wide_threads, 1, 1],
                     as_bytes(&pc).to_vec(),
-                    [m as u64, 1, 1],
+                    [m as u32, 1, 1],
                 )
             } else {
                 // Narrow output: 1 row per workgroup, reduce_threads along K
+                let max_threads = gpu
+                    .max_workgroup_invocations()
+                    .min(gpu.max_workgroup_size()[1]);
+                let reduce_threads = if max_threads >= 256 {
+                    1 << (31 - max_threads.leading_zeros())
+                } else {
+                    max_threads
+                };
                 (
                     [1, reduce_threads, 1],
                     as_bytes(&pc).to_vec(),
-                    [m as u64, reduce_threads as u64, 1],
+                    [m as u32, reduce_threads, 1],
                 )
             }
         }
@@ -342,9 +340,9 @@ fn execute_gpu_matmul(
             };
 
             (
-                gpu.optimal_workgroup_size_2d(n as u64, m as u64),
+                gpu.workgroup_size_2d(),
                 as_bytes(&pc).to_vec(),
-                [n as u64, m as u64, 1],
+                [n as u32, m as u32, 1],
             )
         }
 
@@ -486,21 +484,13 @@ fn execute_gpu_matmul(
                 stride_c1,
             };
 
-            let max_shmem = gpu.max_shared_memory_size();
-            let m_u64 = m as u64;
-            let n_u64 = n as u64;
-            let tile_dim = if max_shmem >= 8192 && m_u64 >= 32 && n_u64 >= 32 {
-                32
-            } else if max_shmem >= 2048 && m_u64 >= 16 && n_u64 >= 16 {
-                16
-            } else {
-                8
-            };
+            let bytes_per_thread = 2 * dst_dtype.size_in_bytes().unwrap_or(4);
+            let tile_dim = gpu.optimal_tiled_matrix_size(m, n, bytes_per_thread);
 
             (
                 [tile_dim, tile_dim, 1],
                 as_bytes(&pc).to_vec(),
-                [n as u64, m as u64, batch as u64],
+                [n, m, batch],
             )
         }
 
@@ -523,9 +513,9 @@ fn execute_gpu_matmul(
             };
 
             (
-                gpu.optimal_workgroup_size_2d(m as u64, batch as u64),
+                gpu.workgroup_size_2d(),
                 as_bytes(&pc).to_vec(),
-                [m as u64, batch as u64, 1],
+                [m as u32, batch as u32, 1],
             )
         }
 
@@ -548,9 +538,9 @@ fn execute_gpu_matmul(
             };
 
             (
-                gpu.optimal_workgroup_size_2d(n as u64, batch as u64),
+                gpu.workgroup_size_2d(),
                 as_bytes(&pc).to_vec(),
-                [n as u64, batch as u64, 1],
+                [n as u32, batch as u32, 1],
             )
         }
 

@@ -75,11 +75,11 @@ impl Instruction for ReLUInstruction {
         let dst_tensor = cm.tensor_read(self.dst);
         let dst_mem = dst_tensor.get_gpu_memory_or_panic();
 
-        let num_elements = dst_tensor.desc().num_elements() as u64;
+        let num_elements = dst_tensor.desc().num_elements();
 
         let dst_dtype = dst_tensor.desc().data_type();
 
-        let local_size = gpu.optimal_workgroup_size_1d(num_elements);
+        let local_size = gpu.workgroup_size_1d();
 
         gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
 
@@ -88,7 +88,7 @@ impl Instruction for ReLUInstruction {
         let pc_data = (num_elements as u32).to_ne_bytes();
         gpu.bind_push_constants(command_buffer, op_name, &pc_data);
 
-        gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);
+        gpu.dispatch(command_buffer, local_size, [num_elements as u32, 1, 1]);
 
         Ok(())
     }

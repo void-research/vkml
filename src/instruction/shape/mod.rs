@@ -129,7 +129,7 @@ impl Instruction for ShapeInstruction {
         let dst_mem = dst_t.get_gpu_memory_or_panic();
         let dst_dtype = dst_t.desc().data_type();
 
-        let local_size = gpu.optimal_workgroup_size_1d(slice_len as u64);
+        let local_size = gpu.workgroup_size_1d();
 
         gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[dst_mem]);
@@ -138,7 +138,7 @@ impl Instruction for ShapeInstruction {
         gpu.bind_push_constants(command_buffer, shader, pc_bytes);
 
         // Dispatch with one work item per shape element
-        gpu.dispatch(command_buffer, local_size, [slice_len as u64, 1, 1]);
+        gpu.dispatch(command_buffer, local_size, [slice_len as u32, 1, 1]);
 
         Ok(())
     }

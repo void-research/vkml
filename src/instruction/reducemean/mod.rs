@@ -100,31 +100,16 @@ impl Instruction for ReduceMeanInstruction {
             return Ok(());
         }
 
-        // compute total elements and reduction_size and output elements
-        let _total_elements: u64 = src_t.desc().dims().iter().map(|d| *d as u64).product();
+        // compute reduction_size and output elements
         let mut reduction_size: u64 = 1;
         for &a in &axes_vec {
             reduction_size *= src_t.desc().dims()[a as usize] as u64;
         }
 
-        // compute output dims and elements
-        let mut out_dims: Vec<i64> = Vec::new();
-        for (i, &d) in src_t.desc().dims().iter().enumerate() {
-            if axes_vec.contains(&(i as i64)) {
-                if self.keepdims != 0 {
-                    out_dims.push(1);
-                }
-            } else {
-                out_dims.push(d);
-            }
-        }
-        if out_dims.is_empty() {
-            out_dims.push(1);
-        }
-        let out_elements: u64 = out_dims.iter().map(|d| *d as u64).product();
+        let out_elements = dst_t.desc().num_elements() as u32;
 
         let mean_pc = ReduceMeanPushConstants {
-            total: out_elements as u32,
+            total: out_elements,
             reduction_size: reduction_size as u32,
         };
         let mean_pc_bytes = as_bytes(&mean_pc);
@@ -132,7 +117,7 @@ impl Instruction for ReduceMeanInstruction {
         let dst_dtype = dst_t.desc().data_type();
 
         // Choose a local size for dispatch (1D op)
-        let local_size = gpu.optimal_workgroup_size_1d(out_elements);
+        let local_size = gpu.workgroup_size_1d();
 
         gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);

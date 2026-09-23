@@ -196,7 +196,7 @@ impl Instruction for GemmInstruction {
         let c_gpu_mem = c_tensor.as_ref().map(|t| t.get_gpu_memory_or_panic());
 
         // Choose optimal workgroup size for 2D matrix operation
-        let local_size = gpu.optimal_workgroup_size_2d(n as u64, m as u64);
+        let local_size = gpu.workgroup_size_2d();
 
         let y_dtype = y_tensor.desc().data_type();
 
@@ -208,20 +208,11 @@ impl Instruction for GemmInstruction {
                     &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
                 );
                 gpu.bind_push_constants(command_buffer, op_name, as_bytes(&pc));
-                gpu.dispatch(command_buffer, local_size, [n as u64, m as u64, 1]);
+                gpu.dispatch(command_buffer, local_size, [n as u32, m as u32, 1]);
             }
             GpuShader::Gemm_Tiled => {
-                let max_shmem = gpu.max_shared_memory_size();
-                let m_u64 = m as u64;
-                let n_u64 = n as u64;
-
-                let tile_dim = if max_shmem >= 8192 && m_u64 >= 32 && n_u64 >= 32 {
-                    32
-                } else if max_shmem >= 2048 && m_u64 >= 16 && n_u64 >= 16 {
-                    16
-                } else {
-                    8
-                };
+                let bytes_per_thread = 2 * y_dtype.size_in_bytes().unwrap_or(4);
+                let tile_dim = gpu.optimal_tiled_matrix_size(m as u32, n as u32, bytes_per_thread);
                 let tiled_local_size = [tile_dim, tile_dim, 1];
 
                 gpu.bind_slang_compute_pipeline(command_buffer, op_name, y_dtype, tiled_local_size);
@@ -230,7 +221,7 @@ impl Instruction for GemmInstruction {
                     &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
                 );
                 gpu.bind_push_constants(command_buffer, GpuShader::Gemm, as_bytes(&pc));
-                gpu.dispatch(command_buffer, tiled_local_size, [n as u64, m as u64, 1]);
+                gpu.dispatch(command_buffer, tiled_local_size, [n as u32, m as u32, 1]);
             }
             _ => {
                 return Err(VKMLError::Instruction(format!(

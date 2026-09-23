@@ -1,3 +1,10 @@
+[vk::constant_id(0)]
+const int WORKGROUP_SIZE_X = 1;
+[vk::constant_id(1)]
+const int WORKGROUP_SIZE_Y = 1;
+[vk::constant_id(2)]
+const int WORKGROUP_SIZE_Z = 1;
+
 struct PushConstants
 {
     uint total;
@@ -7,7 +14,7 @@ struct PushConstants
 PushConstants pc;
 
 [shader("compute")]
-[numthreads(256, 1, 1)]
+[numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : __BuiltinFloatingPointType>(
     StructuredBuffer<T> src,
     RWStructuredBuffer<T> dst,

@@ -208,6 +208,9 @@ impl Instruction for ConvInstruction {
             .map(|t| t.get_gpu_memory_or_panic());
 
         let src_desc = src_tensor.desc();
+        let src_dims = src_desc.dims();
+        let dst_desc = dst_tensor.desc();
+        let dst_dims = dst_desc.dims();
         let pb = self.compute_pads(src_desc);
 
         let spatial_rank = if src_desc.ndim() >= 2 {
@@ -219,14 +222,11 @@ impl Instruction for ConvInstruction {
         match spatial_rank {
             0 | 1 => {
                 // 1D shader
-                let src_dims = src_desc.dims();
                 let input_len = if src_dims.len() >= 3 {
                     src_dims[2] as u32
                 } else {
                     1
                 };
-                let dst_desc = dst_tensor.desc();
-                let dst_dims = dst_desc.dims();
                 let output_len = if dst_dims.len() >= 3 {
                     dst_dims[2] as u32
                 } else {
@@ -251,8 +251,8 @@ impl Instruction for ConvInstruction {
 
                 // Bind pipeline and descriptors (preserve optional bias binding)
                 // choose an optimal local workgroup size for this 1D workload
-                let total: u64 = (src_dims[0] as u64) * (dst_dims[1] as u64) * (output_len as u64);
-                let local_size = gpu.optimal_workgroup_size_1d(total);
+                let total = (src_dims[0] as u32) * (dst_dims[1] as u32) * output_len;
+                let local_size = gpu.workgroup_size_1d();
 
                 let dst_dtype = dst_desc.data_type();
 
@@ -270,10 +270,6 @@ impl Instruction for ConvInstruction {
             }
             2 => {
                 // 2D shader
-                let src_dims = src_desc.dims();
-                let dst_desc = dst_tensor.desc();
-                let dst_dims = dst_desc.dims();
-
                 let pc_values = Conv2DPushConstants {
                     n: src_dims[0] as u32,
                     c: src_dims[1] as u32,
@@ -297,11 +293,11 @@ impl Instruction for ConvInstruction {
                 let push_constant_bytes = as_bytes(&pc_values);
 
                 // choose a 2D tile size suitable for (out_h x out_w) work
-                let out_w = dst_dims[3] as u64;
-                let out_h = dst_dims[2] as u64;
-                let batch_nm = (dst_dims[0] as u64) * (dst_dims[1] as u64); // n * m
+                let out_w = dst_dims[3] as u32;
+                let out_h = dst_dims[2] as u32;
+                let batch_nm = (dst_dims[0] as u32) * (dst_dims[1] as u32); // n * m
 
-                let local_size = gpu.optimal_workgroup_size_2d(out_h, out_w);
+                let local_size = gpu.workgroup_size_2d();
 
                 let dst_dtype = dst_desc.data_type();
 
@@ -318,10 +314,6 @@ impl Instruction for ConvInstruction {
             }
             3 => {
                 // 3D shader
-                let src_dims = src_desc.dims();
-                let dst_desc = dst_tensor.desc();
-                let dst_dims = dst_desc.dims();
-
                 let pc_values = Conv3DPushConstants {
                     n: src_dims[0] as u32,
                     c: src_dims[1] as u32,
@@ -350,15 +342,15 @@ impl Instruction for ConvInstruction {
 
                 let push_constant_bytes = as_bytes(&pc_values);
 
-                let out_w = dst_dims[4] as u64;
-                let out_h = dst_dims[3] as u64;
-                let out_d = dst_dims[2] as u64;
+                let out_w = dst_dims[4] as u32;
+                let out_h = dst_dims[3] as u32;
+                let out_d = dst_dims[2] as u32;
 
                 // total_z includes depth * batch (n * m)
-                let total_z = (out_d) * (dst_dims[0] as u64) * (dst_dims[1] as u64);
+                let total_z = (out_d) * (dst_dims[0] as u32) * (dst_dims[1] as u32);
 
                 // pick a cubic local workgroup size based on spatial dims
-                let local_size = gpu.optimal_workgroup_size_3d(out_w, out_h, out_d);
+                let local_size = gpu.workgroup_size_3d();
 
                 let dst_dtype = dst_desc.data_type();
 
