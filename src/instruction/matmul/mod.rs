@@ -174,24 +174,9 @@ impl Instruction for MatMulInstruction {
         let src2_dtype = src2_tensor.desc().data_type();
         let dst_dtype = dst_tensor.desc().data_type();
 
-        let src1_dims: Vec<usize> = src1_tensor
-            .desc()
-            .dims()
-            .iter()
-            .map(|&d| d as usize)
-            .collect();
-        let src2_dims: Vec<usize> = src2_tensor
-            .desc()
-            .dims()
-            .iter()
-            .map(|&d| d as usize)
-            .collect();
-        let dst_dims: Vec<usize> = dst_tensor
-            .desc()
-            .dims()
-            .iter()
-            .map(|&d| d as usize)
-            .collect();
+        let src1_dims = src1_tensor.desc().dims_usize();
+        let src2_dims = src2_tensor.desc().dims_usize();
+        let dst_dims = dst_tensor.desc().dims_usize();
 
         let src1_bytes = src1_tensor.get_cpu_memory_slice_or_panic();
         let src2_bytes = src2_tensor.get_cpu_memory_slice_or_panic();

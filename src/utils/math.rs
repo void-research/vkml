@@ -64,3 +64,56 @@ pub fn calc_begin_and_end_pads(
 
     (pads_begin, pads_end)
 }
+
+/// Calculate the total number of elements represented by a slice of dimensions
+pub fn product(dims: &[i64]) -> usize {
+    dims.iter().map(|&d| d as usize).product()
+}
+
+/// Converts a slice of dimensions to `Vec<usize>`.
+pub fn dims_as_usize(dims: &[i64]) -> Vec<usize> {
+    dims.iter().map(|&d| d as usize).collect()
+}
+
+/// Calculate strides for row-major memory layout
+pub fn strides(dims: &[i64]) -> Vec<usize> {
+    let mut s = vec![1; dims.len()];
+    for i in (0..dims.len().saturating_sub(1)).rev() {
+        s[i] = s[i + 1] * dims[i + 1] as usize;
+    }
+    s
+}
+
+/// Compute broadcast shape of two dimension slices following numpy/ONNX rules
+pub fn broadcast_shape(a: &[i64], b: &[i64]) -> Option<Vec<i64>> {
+    let ndim = a.len().max(b.len());
+    let mut out = vec![1i64; ndim];
+    for i in 0..ndim {
+        let ai = *a.get(a.len().wrapping_sub(i + 1)).unwrap_or(&1);
+        let bi = *b.get(b.len().wrapping_sub(i + 1)).unwrap_or(&1);
+        if ai == bi || ai == 1 || bi == 1 {
+            out[ndim - 1 - i] = ai.max(bi);
+        } else {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// Compute broadcast strides for a source shape to match destination shape
+pub fn broadcast_strides(src: &[i64], dst: &[i64]) -> Vec<usize> {
+    let src_strides = strides(src);
+    let mut bs = vec![0; dst.len()];
+    let offset = dst.len().saturating_sub(src.len());
+    for (i, b) in bs.iter_mut().enumerate().take(dst.len()) {
+        let dim = *src.get(i.wrapping_sub(offset)).unwrap_or(&1) as usize;
+        let stride = *src_strides.get(i.wrapping_sub(offset)).unwrap_or(&0);
+        *b = if dim == 1 { 0 } else { stride };
+    }
+    bs
+}
+
+/// Compute flat offset from multi-dimensional coordinates and strides
+pub fn offset(idxs: &[usize], strides: &[usize]) -> usize {
+    idxs.iter().zip(strides.iter()).map(|(i, s)| i * s).sum()
+}

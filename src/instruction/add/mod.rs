@@ -5,10 +5,11 @@ use crate::ComputeManager;
 use crate::VKMLError;
 use crate::instruction::add::push_constants::AddPushConstants;
 use crate::utils::as_bytes;
+use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     gpu::Gpu,
     instruction::{GpuShader, Instruction, add::f32_f32_f32_cpu::f32_f32_f32_cpu},
-    tensor::{ComputeTarget, TensorDesc},
+    tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -38,8 +39,8 @@ impl AddInstruction {
             return None;
         }
 
-        let strides_a = TensorDesc::broadcast_strides(src1_desc.dims(), dst_dims);
-        let strides_b = TensorDesc::broadcast_strides(src2_desc.dims(), dst_dims);
+        let strides_a = broadcast_strides(src1_desc.dims(), dst_dims);
+        let strides_b = broadcast_strides(src2_desc.dims(), dst_dims);
 
         let use_nostride = dst_dims.len() == 1
             && strides_a.len() == 1
@@ -99,7 +100,7 @@ impl Instruction for AddInstruction {
         let src2_desc = cm.tensor_desc(self.src2);
         let dst_desc = cm.tensor_desc(self.dst);
 
-        if TensorDesc::broadcast_shape(src1_desc.dims(), src2_desc.dims()).is_none() {
+        if broadcast_shape(src1_desc.dims(), src2_desc.dims()).is_none() {
             return Err(VKMLError::Instruction(format!(
                 "Add instruction {:?}: cannot broadcast shapes {:?} and {:?}",
                 self,
@@ -154,8 +155,8 @@ impl Instruction for AddInstruction {
             dims_arr[i] = d as u32;
         }
 
-        let strides_a_usize = TensorDesc::broadcast_strides(src1_dims_usize, dst_dims_usize);
-        let strides_b_usize = TensorDesc::broadcast_strides(src2_dims_usize, dst_dims_usize);
+        let strides_a_usize = broadcast_strides(src1_dims_usize, dst_dims_usize);
+        let strides_b_usize = broadcast_strides(src2_dims_usize, dst_dims_usize);
 
         let mut strides_a_arr = [0u32; 8];
         for (i, &s) in strides_a_usize.iter().enumerate().take(8) {
@@ -216,12 +217,12 @@ impl Instruction for AddInstruction {
         let b = src2_tensor.desc().dims();
         let c = dst_tensor.desc().dims().to_vec();
 
-        let bc = TensorDesc::broadcast_shape(a, b)
-            .unwrap_or_else(|| panic!("Can't broadcast {:?} vs {:?}", a, b));
+        let bc =
+            broadcast_shape(a, b).unwrap_or_else(|| panic!("Can't broadcast {:?} vs {:?}", a, b));
         assert_eq!(bc, c, "Broadcast {:?} != dst {:?}", bc, c);
 
-        let sa = TensorDesc::broadcast_strides(a, &c);
-        let sb = TensorDesc::broadcast_strides(b, &c);
+        let sa = broadcast_strides(a, &c);
+        let sb = broadcast_strides(b, &c);
 
         let src1_dtype = src1_tensor.desc().data_type();
         let src2_dtype = src2_tensor.desc().data_type();

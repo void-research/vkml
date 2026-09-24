@@ -1,11 +1,12 @@
 mod f32_f32_cpu;
 
 use crate::VKMLError;
+use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     ComputeManager,
     gpu::Gpu,
     instruction::{GpuShader, Instruction, sigmoid::f32_f32_cpu::f32_f32_cpu},
-    tensor::{ComputeTarget, TensorDesc},
+    tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 
@@ -104,11 +105,11 @@ impl Instruction for SigmoidInstruction {
         let a = src_tensor.desc().dims();
         let c = dst_tensor.desc().dims().to_vec();
 
-        let bc = TensorDesc::broadcast_shape(a, &c)
-            .unwrap_or_else(|| panic!("Can't broadcast {:?} vs {:?}", a, c));
+        let bc =
+            broadcast_shape(a, &c).unwrap_or_else(|| panic!("Can't broadcast {:?} vs {:?}", a, c));
         assert_eq!(bc.as_slice(), c, "Broadcast {:?} != dst {:?}", bc, c);
 
-        let sa = TensorDesc::broadcast_strides(a, &c);
+        let sa = broadcast_strides(a, &c);
 
         let src_dtype = src_tensor.desc().data_type();
         let dst_dtype = dst_tensor.desc().data_type();

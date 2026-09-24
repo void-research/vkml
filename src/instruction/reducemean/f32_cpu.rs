@@ -1,6 +1,6 @@
 use bytemuck::{try_cast_slice, try_cast_slice_mut};
 
-use crate::TensorDesc;
+use crate::utils::math::strides;
 
 /// Compute ReduceMean for f32 inputs on CPU.
 ///
@@ -45,8 +45,8 @@ pub fn f32_cpu(
     let mut out_vals = vec![0f32; out_num];
 
     // compute strides
-    let src_strides = TensorDesc::compute_strides(src_dims);
-    let out_strides = TensorDesc::compute_strides(&out_dims);
+    let src_strides = strides(src_dims);
+    let out_strides = strides(&out_dims);
 
     // accumulate
     for (idx, &src_val) in src_f32.iter().enumerate() {

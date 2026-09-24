@@ -6,10 +6,11 @@ use crate::VKMLError;
 use crate::instruction::expand::f32_f32_cpu::f32_f32_cpu;
 use crate::instruction::expand::push_constants::ExpandPushConstants;
 use crate::utils::as_bytes;
+use crate::utils::math::broadcast_strides;
 use crate::{
     gpu::Gpu,
     instruction::{Instruction, gpu_operations::GpuShader},
-    tensor::{ComputeTarget, TensorDesc},
+    tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
@@ -104,7 +105,7 @@ impl Instruction for ExpandInstruction {
             dims_arr[i] = d as u32;
         }
 
-        let strides_src_usize = TensorDesc::broadcast_strides(src_dims_usize, dst_dims_usize);
+        let strides_src_usize = broadcast_strides(src_dims_usize, dst_dims_usize);
 
         let mut strides_src_arr = [0u32; 8];
         for (i, &s) in strides_src_usize.iter().enumerate().take(8) {
@@ -168,7 +169,7 @@ impl Instruction for ExpandInstruction {
         }
 
         // Calculate broadcast strides
-        let strides_src = TensorDesc::broadcast_strides(src_dims, &dst_dims);
+        let strides_src = broadcast_strides(src_dims, &dst_dims);
 
         let src_dtype = src_tensor.desc().data_type();
         let dst_dtype = dst_tensor.desc().data_type();

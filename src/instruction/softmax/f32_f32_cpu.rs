@@ -1,3 +1,4 @@
+use crate::utils::math::product;
 use bytemuck::{try_cast_slice, try_cast_slice_mut};
 
 // CPU softmax helper for f32. Currently supports softmax along the last dimension
@@ -11,7 +12,7 @@ pub fn f32_f32_cpu(dst_dims: &[i64], dim: usize, src_bytes: &[u8], dst_ptr: &mut
         "Softmax helper currently only supports the last dimension"
     );
 
-    let num_elements: usize = dst_dims.iter().map(|d| *d as usize).product();
+    let num_elements: usize = product(dst_dims);
 
     let src_f32: &[f32] = try_cast_slice(src_bytes)
         .expect("src byte slice cannot be cast to f32 slice (alignment/length mismatch)");

@@ -1,3 +1,4 @@
+use crate::utils::math::product;
 use bytemuck::{try_cast_slice, try_cast_slice_mut};
 
 pub fn f32_cpu(
@@ -30,9 +31,9 @@ pub fn f32_cpu(
     // Compute sizes used for copying contiguous blocks.
     // outer = product of dims[0..axis]
     // inner = product of dims[axis+1..]
-    let outer: usize = dst_dims[0..axis].iter().map(|d| *d as usize).product();
+    let outer: usize = product(&dst_dims[0..axis]);
     let inner: usize = if axis < rank - 1 {
-        dst_dims[axis + 1..].iter().map(|d| *d as usize).product()
+        product(&dst_dims[axis + 1..])
     } else {
         1usize
     };
@@ -40,7 +41,7 @@ pub fn f32_cpu(
     // Cast dst once
     let dst_f32: &mut [f32] = try_cast_slice_mut(dst_ptr)
         .expect("dst byte slice cannot be cast to f32 slice (alignment/length mismatch)");
-    let total_elements: usize = dst_dims.iter().map(|d| *d as usize).product();
+    let total_elements: usize = product(dst_dims);
     assert_eq!(dst_f32.len(), total_elements, "dst buffer size mismatch");
 
     // Cast each source once and compute its axis length

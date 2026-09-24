@@ -4,6 +4,7 @@ mod push_constants;
 use crate::VKMLError;
 use crate::instruction::gemm::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu;
 use crate::instruction::gemm::push_constants::GemmPushConstants;
+use crate::utils::broadcast_strides;
 use crate::utils::bytes::as_bytes;
 use crate::{
     ComputeManager,
@@ -176,7 +177,7 @@ impl Instruction for GemmInstruction {
         let c_strides = c_tensor
             .as_ref()
             .map(|t| {
-                let bs = crate::TensorDesc::broadcast_strides(t.desc().dims(), y_dims);
+                let bs = broadcast_strides(t.desc().dims(), y_dims);
                 match bs.as_slice() {
                     [s0, s1] => (*s0 as u32, *s1 as u32),
                     [s1] => (0u32, *s1 as u32),
@@ -254,13 +255,9 @@ impl Instruction for GemmInstruction {
         let c_tensor = self.c.map(|c| cm.tensor_read(c));
         let y_tensor = cm.tensor_write(self.y);
 
-        let a_dims_i64 = a_tensor.desc().dims();
-        let b_dims_i64 = b_tensor.desc().dims();
-        let y_dims_i64 = y_tensor.desc().dims();
-
-        let a_dims: Vec<usize> = a_dims_i64.iter().map(|&d| d as usize).collect();
-        let b_dims: Vec<usize> = b_dims_i64.iter().map(|&d| d as usize).collect();
-        let y_dims: Vec<usize> = y_dims_i64.iter().map(|&d| d as usize).collect();
+        let a_dims = a_tensor.desc().dims_usize();
+        let b_dims = b_tensor.desc().dims_usize();
+        let y_dims = y_tensor.desc().dims_usize();
 
         let a_dtype = a_tensor.desc().data_type();
         let b_dtype = b_tensor.desc().data_type();

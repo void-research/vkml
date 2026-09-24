@@ -1,4 +1,5 @@
 use crate::VKMLError;
+use crate::utils::math::product;
 use crate::{
     ComputeManager, gpu::Gpu, instruction::Instruction, tensor::ComputeTarget,
     tensor_graph::TensorId,
@@ -131,7 +132,7 @@ impl Instruction for ReshapeInstruction {
             }
         } else {
             // verify product matches
-            let prod: usize = new_dims.iter().map(|&d| d as usize).product();
+            let prod: usize = product(&new_dims);
             if prod != src_num {
                 panic!("Reshape: total elements do not match input tensor at runtime");
             }

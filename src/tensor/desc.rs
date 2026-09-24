@@ -1,3 +1,4 @@
+use crate::utils::math::{dims_as_usize, product, strides};
 use onnx_extractor::DataType;
 
 #[derive(Clone, Debug)]
@@ -16,8 +17,23 @@ impl TensorDesc {
         self.data_type
     }
 
+    // Get dimensions
+    pub fn dims(&self) -> &[i64] {
+        &self.dims
+    }
+
+    // Get dimensions as Vec<usize>
+    pub fn dims_usize(&self) -> Vec<usize> {
+        dims_as_usize(&self.dims)
+    }
+
+    // Get number of dimensions
+    pub fn ndim(&self) -> usize {
+        self.dims.len()
+    }
+
     pub fn num_elements(&self) -> usize {
-        self.dims.iter().map(|d| *d as usize).product()
+        product(&self.dims)
     }
 
     // Size in bytes for the tensor given its DataType
@@ -26,23 +42,13 @@ impl TensorDesc {
         self.num_elements() * elem_size
     }
 
-    // Get dimensions
-    pub fn dims(&self) -> &[i64] {
-        &self.dims
-    }
-
-    // Get number of dimensions
-    pub fn ndim(&self) -> usize {
-        self.dims.len()
-    }
-
     // Reshape to new dimensions (preserving total elements)
     pub fn reshape(&mut self, new_dims: Vec<i64>) -> Result<(), String> {
         if new_dims.is_empty() {
             return Err("New shape must have at least one dimension".to_string());
         }
 
-        let new_elements: usize = new_dims.iter().map(|d| *d as usize).product();
+        let new_elements: usize = product(&new_dims);
         if new_elements != self.num_elements() {
             return Err("New shape must have the same number of elements".to_string());
         }
@@ -58,7 +64,7 @@ impl TensorDesc {
 
     // Calculate strides for row-major memory layout
     pub fn strides(&self) -> Vec<usize> {
-        Self::compute_strides(&self.dims)
+        strides(&self.dims)
     }
 
     // Flatten to 1D
@@ -88,7 +94,7 @@ impl TensorDesc {
         // Any remaining dimensions represent the kernel/spatial dimensions
         // Calculate their product
         let kernel_size: usize = if self.dims.len() > 2 {
-            self.dims[2..].iter().map(|d| *d as usize).product()
+            product(&self.dims[2..])
         } else {
             1
         };
@@ -96,57 +102,5 @@ impl TensorDesc {
         // fan_in = input_features × kernel_size
         // fan_out = output_features × kernel_size
         (in_features * kernel_size, out_features * kernel_size)
-    }
-
-    pub fn compute_strides(dims: &[i64]) -> Vec<usize> {
-        let mut s = vec![1; dims.len()];
-        for i in (0..dims.len().saturating_sub(1)).rev() {
-            s[i] = s[i + 1] * dims[i + 1] as usize;
-        }
-        s
-    }
-
-    pub fn broadcast_shape(a: &[i64], b: &[i64]) -> Option<Vec<i64>> {
-        let ndim = a.len().max(b.len());
-        let mut out = vec![1i64; ndim];
-        for i in 0..ndim {
-            let ai = *a.get(a.len().wrapping_sub(i + 1)).unwrap_or(&1);
-            let bi = *b.get(b.len().wrapping_sub(i + 1)).unwrap_or(&1);
-            if ai == bi || ai == 1 || bi == 1 {
-                out[ndim - 1 - i] = ai.max(bi);
-            } else {
-                return None;
-            }
-        }
-        Some(out)
-    }
-
-    pub fn broadcast_strides(src: &[i64], dst: &[i64]) -> Vec<usize> {
-        let src_strides = Self::compute_strides(src);
-        let mut bs = vec![0; dst.len()];
-        let offset = dst.len().saturating_sub(src.len());
-        for (i, b) in bs.iter_mut().enumerate().take(dst.len()) {
-            let dim = *src.get(i.wrapping_sub(offset)).unwrap_or(&1) as usize;
-            let stride = *src_strides.get(i.wrapping_sub(offset)).unwrap_or(&0);
-            *b = if dim == 1 { 0 } else { stride };
-        }
-        bs
-    }
-
-    pub fn unravel(idx: usize, dims: &[i64]) -> Vec<usize> {
-        let mut rem = idx;
-        let strides = Self::compute_strides(dims);
-        dims.iter()
-            .enumerate()
-            .map(|(i, _)| {
-                let c = rem / strides[i];
-                rem %= strides[i];
-                c
-            })
-            .collect()
-    }
-
-    pub fn offset(idxs: &[usize], strides: &[usize]) -> usize {
-        idxs.iter().zip(strides.iter()).map(|(i, s)| i * s).sum()
     }
 }

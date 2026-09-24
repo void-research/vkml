@@ -1,6 +1,6 @@
 use bytemuck::{try_cast_slice, try_cast_slice_mut};
 
-use crate::TensorDesc;
+use crate::utils::math::{offset, strides};
 
 /// A simple single-threaded N-D convolution for f32 tensors.
 pub fn f32_f32_f32_f32_cpu(
@@ -43,14 +43,9 @@ pub fn f32_f32_f32_f32_cpu(
     let spatial_rank = src_dims.len() - 2;
 
     // Compute strides for indexing
-    let src_strides = TensorDesc::compute_strides(src_dims);
-    let dst_strides = TensorDesc::compute_strides(dst_dims);
-    let weight_strides = TensorDesc::compute_strides(weight_dims);
-
-    // Helper to compute linear offset
-    let offset = |idxs: &[usize], strides: &[usize]| -> usize {
-        idxs.iter().zip(strides.iter()).map(|(i, s)| i * s).sum()
-    };
+    let src_strides = strides(src_dims);
+    let dst_strides = strides(dst_dims);
+    let weight_strides = strides(weight_dims);
 
     // Bias as f32 slice if present
     let bias_f: Option<&[f32]> = bias_bytes.map(|b| try_cast_slice(b).expect("bias bytes not f32"));

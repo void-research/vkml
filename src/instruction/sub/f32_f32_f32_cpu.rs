@@ -1,3 +1,4 @@
+use crate::utils::math::{dims_as_usize, product};
 use bytemuck::{try_cast_slice, try_cast_slice_mut};
 
 pub fn f32_f32_f32_cpu(
@@ -9,7 +10,7 @@ pub fn f32_f32_f32_cpu(
     dst_ptr: &mut [u8],
 ) {
     // number of elements in destination
-    let num_elements: usize = dst_dims.iter().map(|d| *d as usize).product();
+    let num_elements: usize = product(&dst_dims);
 
     // cast raw bytes to f32 slices (panic if cast fails as requested)
     let src1_f32: &[f32] = try_cast_slice(src1_bytes)
@@ -22,7 +23,7 @@ pub fn f32_f32_f32_cpu(
     assert_eq!(dst_f32.len(), num_elements, "dst buffer size mismatch");
 
     let rank = dst_dims.len();
-    let dims_usize: Vec<usize> = dst_dims.iter().map(|d| *d as usize).collect();
+    let dims_usize: Vec<usize> = dims_as_usize(&dst_dims);
 
     // odometer indices for efficient iteration without division/modulo per element
     let mut idxs = vec![0usize; rank];
