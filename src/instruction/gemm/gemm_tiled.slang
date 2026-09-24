@@ -16,6 +16,8 @@ struct PushConstants
     uint stride_b1;
     uint stride_y0;
     uint stride_y1;
+    uint stride_c0;
+    uint stride_c1;
     uint trans_a;
     uint trans_b;
     float alpha;
@@ -80,7 +82,7 @@ void main<T : IArithmetic & IGemmScalar>(
             T result = T(0);
             if (pc.has_c != 0)
             {
-                uint c_idx = out_row * pc.n + out_col;
+                uint c_idx = out_row * pc.stride_c0 + out_col * pc.stride_c1;
                 result = result + T.scale(c[c_idx], pc.beta);
             }
             uint y_idx = out_row * pc.stride_y0 + out_col * pc.stride_y1;
@@ -124,7 +126,7 @@ void main<T : IArithmetic & IGemmScalar>(
 
         if (pc.has_c != 0)
         {
-            uint c_idx = out_row * pc.n + out_col;
+            uint c_idx = out_row * pc.stride_c0 + out_col * pc.stride_c1;
             result = result + T.scale(c[c_idx], pc.beta);
         }
 

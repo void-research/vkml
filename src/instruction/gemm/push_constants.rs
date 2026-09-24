@@ -9,6 +9,8 @@ pub struct GemmPushConstants {
     pub stride_b1: u32,
     pub stride_y0: u32,
     pub stride_y1: u32,
+    pub stride_c0: u32,
+    pub stride_c1: u32,
     pub trans_a: u32,
     pub trans_b: u32,
     pub alpha: u32, // f32 as raw bits

@@ -251,26 +251,21 @@ fn execute_gpu_matmul(
                 stride_c: *dst_strides.last().unwrap() as u32,
             };
 
-            if n >= 64 {
-                // Wide output: 1 thread per column, wide_threads columns per workgroup
-                let wide_threads = gpu.max_workgroup_size()[0]
-                    .min(gpu.max_workgroup_invocations())
-                    .min(256);
+            let sg = gpu.subgroup_size().min(gpu.max_workgroup_size()[0]);
+            if (n as u32) >= sg {
+                let dim_x = sg.min(64);
+                let max_inv = gpu.max_workgroup_invocations().min(256);
+                let dim_y = (max_inv / dim_x).max(1);
                 (
-                    [wide_threads, 1, 1],
+                    [dim_x, dim_y, 1],
                     as_bytes(&pc).to_vec(),
-                    [n as u32, 1, 1],
+                    [n as u32, dim_y, 1],
                 )
             } else {
-                // Narrow output: 1 column per workgroup, reduce_threads along K
                 let max_threads = gpu
                     .max_workgroup_invocations()
                     .min(gpu.max_workgroup_size()[1]);
-                let reduce_threads = if max_threads >= 256 {
-                    1 << (31 - max_threads.leading_zeros())
-                } else {
-                    max_threads
-                };
+                let reduce_threads = 1u32 << (31 - max_threads.leading_zeros());
                 (
                     [1, reduce_threads, 1],
                     as_bytes(&pc).to_vec(),
@@ -293,26 +288,21 @@ fn execute_gpu_matmul(
                 stride_c: *dst_strides.last().unwrap() as u32,
             };
 
-            if m >= 64 {
-                // Wide output: 1 thread per row, wide_threads rows per workgroup
-                let wide_threads = gpu.max_workgroup_size()[0]
-                    .min(gpu.max_workgroup_invocations())
-                    .min(256);
+            let sg = gpu.subgroup_size().min(gpu.max_workgroup_size()[0]);
+            if (m as u32) >= sg {
+                let dim_x = sg.min(64);
+                let max_inv = gpu.max_workgroup_invocations().min(256);
+                let dim_y = (max_inv / dim_x).max(1);
                 (
-                    [wide_threads, 1, 1],
+                    [dim_x, dim_y, 1],
                     as_bytes(&pc).to_vec(),
-                    [m as u32, 1, 1],
+                    [m as u32, dim_y, 1],
                 )
             } else {
-                // Narrow output: 1 row per workgroup, reduce_threads along K
                 let max_threads = gpu
                     .max_workgroup_invocations()
                     .min(gpu.max_workgroup_size()[1]);
-                let reduce_threads = if max_threads >= 256 {
-                    1 << (31 - max_threads.leading_zeros())
-                } else {
-                    max_threads
-                };
+                let reduce_threads = 1u32 << (31 - max_threads.leading_zeros());
                 (
                     [1, reduce_threads, 1],
                     as_bytes(&pc).to_vec(),
@@ -499,11 +489,13 @@ fn execute_gpu_matmul(
             let batch = src1_dims[0];
             let m = src1_dims[1];
             let k = src1_dims[2];
+            let total = (batch * m) as u32;
 
             let pc = MatMul3D1DPushConstants {
                 batch: batch as u32,
                 m: m as u32,
                 k: k as u32,
+                total,
                 stride_a0: src1_strides[0] as u32,
                 stride_a1: src1_strides[1] as u32,
                 stride_a2: src1_strides[2] as u32,
@@ -512,11 +504,8 @@ fn execute_gpu_matmul(
                 stride_c1: dst_strides[1] as u32,
             };
 
-            (
-                gpu.workgroup_size_2d(),
-                as_bytes(&pc).to_vec(),
-                [m as u32, batch as u32, 1],
-            )
+            let local_size = gpu.workgroup_size_1d();
+            (local_size, as_bytes(&pc).to_vec(), [total, 1, 1])
         }
 
         GpuShader::MatMul_1D3D => {
@@ -524,11 +513,13 @@ fn execute_gpu_matmul(
             let k = src1_dims[0];
             let batch = src2_dims[0];
             let n = src2_dims[2];
+            let total = (batch * n) as u32;
 
             let pc = MatMul1D3DPushConstants {
                 batch: batch as u32,
                 k: k as u32,
                 n: n as u32,
+                total,
                 stride_a: src1_strides[0] as u32,
                 stride_b0: src2_strides[0] as u32,
                 stride_b1: src2_strides[1] as u32,
@@ -537,11 +528,8 @@ fn execute_gpu_matmul(
                 stride_c1: dst_strides[1] as u32,
             };
 
-            (
-                gpu.workgroup_size_2d(),
-                as_bytes(&pc).to_vec(),
-                [n as u32, batch as u32, 1],
-            )
+            let local_size = gpu.workgroup_size_1d();
+            (local_size, as_bytes(&pc).to_vec(), [total, 1, 1])
         }
 
         _ => {

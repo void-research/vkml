@@ -30,13 +30,14 @@ void main<T : IArithmetic>(
     uint col = groupId.x * WORKGROUP_SIZE_X + threadId.x;
     uint tid = threadId.y;
 
-    if (col >= pc.n) return;
-
     T sum = T(0);
 
-    for (uint i = tid; i < pc.k; i += WORKGROUP_SIZE_Y)
+    if (col < pc.n)
     {
-        sum = sum + src1[i * pc.stride_a] * src2[i * pc.stride_b0 + col * pc.stride_b1];
+        for (uint i = tid; i < pc.k; i += WORKGROUP_SIZE_Y)
+        {
+            sum = sum + src1[i * pc.stride_a] * src2[i * pc.stride_b0 + col * pc.stride_b1];
+        }
     }
 
     if (WORKGROUP_SIZE_Y > 1)
@@ -55,12 +56,12 @@ void main<T : IArithmetic>(
             GroupMemoryBarrierWithGroupSync();
         }
 
-        if (tid == 0)
+        if (tid == 0 && col < pc.n)
         {
             dst[col * pc.stride_c] = sdata[shmem_idx];
         }
     }
-    else
+    else if (col < pc.n)
     {
         dst[col * pc.stride_c] = sum;
     }

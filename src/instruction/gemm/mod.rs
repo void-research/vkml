@@ -173,6 +173,18 @@ impl Instruction for GemmInstruction {
         let b_strides = b_tensor.desc().strides();
         let y_strides = y_tensor.desc().strides();
 
+        let c_strides = c_tensor
+            .as_ref()
+            .map(|t| {
+                let bs = crate::TensorDesc::broadcast_strides(t.desc().dims(), y_dims);
+                match bs.as_slice() {
+                    [s0, s1] => (*s0 as u32, *s1 as u32),
+                    [s1] => (0u32, *s1 as u32),
+                    _ => (0u32, 0u32),
+                }
+            })
+            .unwrap_or((0, 0));
+
         // Build push constants
         let has_c = c_tensor.is_some();
         let pc = GemmPushConstants {
@@ -185,6 +197,8 @@ impl Instruction for GemmInstruction {
             stride_b1: b_strides[1] as u32,
             stride_y0: y_strides[0] as u32,
             stride_y1: y_strides[1] as u32,
+            stride_c0: c_strides.0,
+            stride_c1: c_strides.1,
             trans_a: if self.trans_a { 1u32 } else { 0u32 },
             trans_b: if self.trans_b { 1u32 } else { 0u32 },
             alpha: self.alpha.to_bits(),

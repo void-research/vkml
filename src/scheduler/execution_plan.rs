@@ -326,8 +326,7 @@ fn create_gpu_chunk_command_buffer(
             for &op_id in layer {
                 let instruction = compute_manager.tensor_graph.get_instruction_or_panic(op_id);
 
-                instruction
-                    .record_into_command_buffer(gpu, command_buffer, compute_manager)?;
+                instruction.record_into_command_buffer(gpu, command_buffer, compute_manager)?;
             }
 
             pending_writes.extend(layer_writes[layer_idx].iter().copied());

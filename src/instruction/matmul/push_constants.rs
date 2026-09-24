@@ -53,6 +53,7 @@ pub struct MatMul3D1DPushConstants {
     pub batch: u32,
     pub m: u32,
     pub k: u32,
+    pub total: u32, // batch * m
     pub stride_a0: u32,
     pub stride_a1: u32,
     pub stride_a2: u32,
@@ -66,6 +67,7 @@ pub struct MatMul1D3DPushConstants {
     pub batch: u32,
     pub k: u32,
     pub n: u32,
+    pub total: u32, // batch * n
     pub stride_a: u32,
     pub stride_b0: u32,
     pub stride_b1: u32,

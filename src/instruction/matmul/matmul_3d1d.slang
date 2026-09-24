@@ -10,6 +10,7 @@ struct PushConstants
     uint batch;
     uint m;
     uint k;
+    uint total; // batch * m
     uint stride_a0;
     uint stride_a1;
     uint stride_a2;
@@ -27,25 +28,26 @@ void main<T : IArithmetic>(
     StructuredBuffer<T> src1,
     StructuredBuffer<T> src2,
     RWStructuredBuffer<T> dst,
-    uint3 threadId: SV_DispatchThreadID)
+    uint3 groupId: SV_GroupID,
+    uint3 threadId: SV_GroupThreadID)
 {
-    uint row = threadId.x;
-    uint batch = threadId.y;
+    uint flat = groupId.x * WORKGROUP_SIZE_X + threadId.x;
 
-    if (row >= pc.m || batch >= pc.batch)
-    {
+    if (flat >= pc.total)
         return;
-    }
+
+    uint batch_idx = flat / pc.m;
+    uint row = flat % pc.m;
 
     T sum = T(0);
 
     for (uint i = 0; i < pc.k; i++)
     {
-        uint a_idx = batch * pc.stride_a0 + row * pc.stride_a1 + i * pc.stride_a2;
+        uint a_idx = batch_idx * pc.stride_a0 + row * pc.stride_a1 + i * pc.stride_a2;
         uint b_idx = i * pc.stride_b;
         sum = sum + src1[a_idx] * src2[b_idx];
     }
 
-    uint c_idx = batch * pc.stride_c0 + row * pc.stride_c1;
+    uint c_idx = batch_idx * pc.stride_c0 + row * pc.stride_c1;
     dst[c_idx] = sum;
 }
