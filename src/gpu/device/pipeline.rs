@@ -110,7 +110,11 @@ impl Gpu {
             .unwrap_or_else(|e| panic!("Slang compilation failed for {:?}: {}", op, e));
 
         let pipeline = self
-            .create_pipeline(compiled_blob.as_slice(), local_size, op.binding_count())
+            .create_pipeline(
+                compiled_blob.as_slice(),
+                local_size,
+                op.info().binding_count,
+            )
             .unwrap_or_else(|_| {
                 panic!(
                     "Slang Pipeline creation failed for {:?} with workgroup {:?}",
@@ -303,7 +307,7 @@ impl Gpu {
         unsafe {
             self.device.cmd_push_constants(
                 command_buffer,
-                self.get_pipeline_layout(op.binding_count()),
+                self.get_pipeline_layout(op.info().binding_count),
                 vk::ShaderStageFlags::COMPUTE,
                 0,
                 data,

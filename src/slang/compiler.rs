@@ -1,11 +1,11 @@
 use crate::instruction::GpuShader;
 use crate::slang::wrapper::{
-    Blob, CompileTarget, CompilerOptions, ComponentType, FloatingPointMode, GlobalSession,
-    OptimizationLevel, Session, SessionDesc, TargetDesc,
+    Blob, CompilerOptions, ComponentType, GlobalSession, Session, TargetDesc,
 };
 use crate::utils::dtype::onnx_dtype_to_slang_type;
 use crate::utils::error::VKMLError;
 use onnx_extractor::DataType;
+use shader_slang_sys::{SlangCompileTarget, SlangFloatingPointMode, SlangOptimizationLevel};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -26,36 +26,30 @@ impl SlangInner {
         let program = match self.module_cache.get(&op) {
             Some(program) => program.clone(),
             None => {
-                let module_name = op.as_str();
-                let source_string = op.to_slang_shader()?;
-
-                let virtual_path = format!("{module_name}.slang");
-                let module = self.session.load_module_from_source(
-                    module_name,
-                    &virtual_path,
-                    source_string,
-                )?;
+                let info = op.info();
+                let module = self
+                    .session
+                    .load_module_from_source(info.path, info.source)?;
 
                 let entry_point = module.find_entry_point_by_name(c"main").ok_or_else(|| {
                     VKMLError::Slang(format!(
-                        "Entry point 'main' not found in module {module_name}"
+                        "Entry point 'main' not found in module {:?}",
+                        info.path
                     ))
                 })?;
 
                 let program = self
                     .session
-                    .create_composite_component_type(&[module.as_component_type(), &entry_point])?;
+                    .create_composite_component_type(&[&module, &entry_point])?;
 
                 self.module_cache.insert(op, program.clone());
                 program
             }
         };
 
-        let specialized_program = if op.is_generic() {
+        let specialized_program = {
             let dtype_cstr = onnx_dtype_to_slang_type(dtype);
             program.specialize_with_type_name(0, dtype_cstr)?
-        } else {
-            program
         };
 
         let linked_program = specialized_program.link()?;
@@ -80,21 +74,19 @@ impl SlangCompiler {
 
         let options = CompilerOptions::default()
             .matrix_layout_row(true)
-            .optimization(OptimizationLevel::Maximal)
-            .floating_point_mode(FloatingPointMode::Fast)
+            .optimization(SlangOptimizationLevel::Maximal)
+            .floating_point_mode(SlangFloatingPointMode::Fast)
             .emit_spirv_directly(true)
             .skip_spirv_validation(true)
             .glsl_force_scalar_layout(true);
 
         let targets = [TargetDesc::default()
-            .format(CompileTarget::Spirv)
+            .format(SlangCompileTarget::Spirv)
             .profile(profile)
             .options(&options)];
 
-        let session_desc = SessionDesc::default().targets(&targets).options(&options);
-
         let session = global
-            .create_session(&session_desc)
+            .create_session(&targets, &options)
             .ok_or_else(|| VKMLError::Slang("Failed to create persistent Slang Session".into()))?;
 
         Ok(Self {

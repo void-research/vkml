@@ -1,51 +1,48 @@
 use crate::utils::error::VKMLError;
 use shader_slang_sys::{
     IBlobVtable, IComponentTypeVtable, IGlobalSessionVtable, IModuleVtable, ISessionVtable,
-    ISlangBlob, ISlangUnknown, ISlangUnknown__bindgen_vtable, SlangInt, SlangResult,
+    ISlangBlob, ISlangUnknown, ISlangUnknown__bindgen_vtable, SlangCompileTarget,
+    SlangFloatingPointMode, SlangInt, SlangOptimizationLevel, SlangProfileID, SlangResult,
     slang_CompilerOptionEntry, slang_CompilerOptionName, slang_CompilerOptionValue,
-    slang_CompilerOptionValueKind, slang_IComponentType, slang_IEntryPoint, slang_SessionDesc,
+    slang_CompilerOptionValueKind, slang_IComponentType, slang_SessionDesc,
     slang_SpecializationArg, slang_SpecializationArg__bindgen_ty_1, slang_SpecializationArg_Kind,
     slang_TargetDesc,
 };
-use std::ffi::{CStr, CString, c_void};
-use std::ptr::{NonNull, null, null_mut};
+use std::ffi::{CStr, c_void};
+use std::ptr::{NonNull, null_mut};
 
 /// COM ref-counted pointer. Clone calls addRef, Drop calls release.
 struct ComPtr(NonNull<c_void>);
 
 impl ComPtr {
-    unsafe fn from_owned(ptr: *mut c_void) -> Self {
-        Self(NonNull::new(ptr).expect("Slang returned null COM pointer"))
+    unsafe fn new(ptr: *mut c_void) -> Self {
+        Self(NonNull::new(ptr).expect("Slang returned null pointer"))
     }
 
-    /// Calls addRef on a session-owned (borrowed) pointer to take our own reference
     unsafe fn from_borrowed(ptr: *mut c_void) -> Self {
+        let this = unsafe { Self::new(ptr) };
         unsafe {
-            let this = Self::from_owned(ptr);
-            this.add_ref();
-            this
+            let vt = this.vt::<ISlangUnknown__bindgen_vtable>();
+            (vt.ISlangUnknown_addRef)(this.as_ptr() as *mut ISlangUnknown);
         }
+        this
     }
 
     fn as_ptr(&self) -> *mut c_void {
         self.0.as_ptr()
     }
 
-    unsafe fn vtable<V>(&self) -> &V {
+    unsafe fn vt<V>(&self) -> &V {
         unsafe { &**(self.as_ptr() as *mut *mut V) }
-    }
-
-    fn add_ref(&self) {
-        unsafe {
-            let vt = self.vtable::<ISlangUnknown__bindgen_vtable>();
-            (vt.ISlangUnknown_addRef)(self.as_ptr() as *mut ISlangUnknown);
-        }
     }
 }
 
 impl Clone for ComPtr {
     fn clone(&self) -> Self {
-        self.add_ref();
+        unsafe {
+            let vt = self.vt::<ISlangUnknown__bindgen_vtable>();
+            (vt.ISlangUnknown_addRef)(self.as_ptr() as *mut ISlangUnknown);
+        }
         Self(self.0)
     }
 }
@@ -53,7 +50,7 @@ impl Clone for ComPtr {
 impl Drop for ComPtr {
     fn drop(&mut self) {
         unsafe {
-            let vt = self.vtable::<ISlangUnknown__bindgen_vtable>();
+            let vt = self.vt::<ISlangUnknown__bindgen_vtable>();
             (vt.ISlangUnknown_release)(self.as_ptr() as *mut ISlangUnknown);
         }
     }
@@ -62,37 +59,46 @@ impl Drop for ComPtr {
 unsafe impl Send for ComPtr {}
 unsafe impl Sync for ComPtr {}
 
-unsafe fn extract_diagnostics(diag: *mut ISlangBlob) -> Option<String> {
-    if diag.is_null() {
-        return None;
-    }
-    unsafe {
-        let ptr = ComPtr::from_owned(diag as *mut c_void);
-        let vt = ptr.vtable::<IBlobVtable>();
-        let buf = (vt.getBufferPointer)(ptr.as_ptr() as *mut _);
-        let len = (vt.getBufferSize)(ptr.as_ptr() as *mut _);
-
-        if len > 0 && !buf.is_null() {
-            let slice = std::slice::from_raw_parts(buf as *const u8, len);
-            std::str::from_utf8(slice).ok().map(|s| s.to_owned())
-        } else {
-            None
-        }
+/// Extracts diagnostic text from a Slang blob, automatically releasing the blob.
+unsafe fn extract_diag(diag: *mut ISlangBlob) -> Option<String> {
+    let ptr = NonNull::new(diag as *mut c_void)?;
+    let blob = ComPtr(ptr); // auto-releases on drop
+    let vt = unsafe { blob.vt::<IBlobVtable>() };
+    let (buf, len) = unsafe {
+        (
+            (vt.getBufferPointer)(blob.as_ptr()),
+            (vt.getBufferSize)(blob.as_ptr()),
+        )
+    };
+    if len > 0 && !buf.is_null() {
+        let slice = unsafe { std::slice::from_raw_parts(buf as *const u8, len) };
+        let s = String::from_utf8_lossy(slice);
+        let trimmed = s.trim_end_matches('\0').trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    } else {
+        None
     }
 }
 
 unsafe fn check(hr: SlangResult, diag: *mut ISlangBlob) -> Result<(), VKMLError> {
+    let msg = unsafe { extract_diag(diag) };
+    if hr >= 0 {
+        Ok(())
+    } else {
+        Err(VKMLError::Slang(
+            msg.unwrap_or_else(|| format!("Slang error code: {hr}")),
+        ))
+    }
+}
+
+/// Helper for Slang COM calls that return a SlangResult, an output pointer, and a diagnostic blob.
+unsafe fn call_diag<T>(
+    f: impl FnOnce(*mut *mut T, *mut *mut ISlangBlob) -> SlangResult,
+) -> Result<ComPtr, VKMLError> {
+    let (mut out, mut diag) = (null_mut(), null_mut());
     unsafe {
-        if hr >= 0 {
-            if !diag.is_null() {
-                ComPtr::from_owned(diag as *mut c_void); // auto-release
-            }
-            Ok(())
-        } else {
-            let msg =
-                extract_diagnostics(diag).unwrap_or_else(|| format!("Slang error code: {hr}"));
-            Err(VKMLError::Slang(msg))
-        }
+        check(f(&mut out, &mut diag), diag)?;
+        Ok(ComPtr::new(out as *mut c_void))
     }
 }
 
@@ -102,11 +108,18 @@ pub struct Blob(ComPtr);
 impl Blob {
     pub fn as_slice(&self) -> &[u8] {
         unsafe {
-            let vt = self.0.vtable::<IBlobVtable>();
+            let vt = self.0.vt::<IBlobVtable>();
             let ptr = (vt.getBufferPointer)(self.0.as_ptr());
             let len = (vt.getBufferSize)(self.0.as_ptr());
             std::slice::from_raw_parts(ptr as *const u8, len)
         }
+    }
+}
+
+impl std::ops::Deref for Blob {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
     }
 }
 
@@ -121,68 +134,56 @@ impl GlobalSession {
                 &mut ptr,
             );
         }
-        NonNull::new(ptr as *mut c_void).map(|nn| Self(ComPtr(nn)))
+        NonNull::new(ptr as *mut c_void).map(|p| Self(ComPtr(p)))
     }
 
-    pub fn find_profile(&self, name: &CStr) -> ProfileID {
-        unsafe {
-            let vt = self.0.vtable::<IGlobalSessionVtable>();
-            ProfileID((vt.findProfile)(self.0.as_ptr(), name.as_ptr()))
-        }
+    pub fn find_profile(&self, name: &CStr) -> SlangProfileID {
+        let vt = unsafe { self.0.vt::<IGlobalSessionVtable>() };
+        unsafe { (vt.findProfile)(self.0.as_ptr(), name.as_ptr()) }
     }
 
-    pub fn create_session(&self, desc: &SessionDesc) -> Option<Session> {
+    pub fn create_session(
+        &self,
+        targets: &[TargetDesc],
+        options: &CompilerOptions,
+    ) -> Option<Session> {
+        let desc = slang_SessionDesc {
+            structureSize: std::mem::size_of::<slang_SessionDesc>(),
+            targets: targets.as_ptr() as *const slang_TargetDesc,
+            targetCount: targets.len() as SlangInt,
+            compilerOptionEntries: options.as_ptr(),
+            compilerOptionEntryCount: options.len(),
+            ..unsafe { std::mem::zeroed() }
+        };
         let mut ptr = null_mut();
-        unsafe {
-            let vt = self.0.vtable::<IGlobalSessionVtable>();
-            (vt.createSession)(self.0.as_ptr(), &desc.inner, &mut ptr);
-        }
-        NonNull::new(ptr as *mut c_void).map(|nn| Session(ComPtr(nn)))
+        let vt = unsafe { self.0.vt::<IGlobalSessionVtable>() };
+        let hr = unsafe { (vt.createSession)(self.0.as_ptr(), &desc, &mut ptr) };
+        (hr >= 0 && !ptr.is_null()).then(|| unsafe { Session(ComPtr::new(ptr as *mut c_void)) })
     }
 }
-
-#[derive(Clone, Copy)]
-pub struct ProfileID(pub shader_slang_sys::SlangProfileID);
 
 pub struct Session(ComPtr);
 
 impl Session {
-    pub fn load_module_from_source(
-        &self,
-        module_name: &str,
-        path: &str,
-        source: &str,
-    ) -> Result<Module, VKMLError> {
-        let name_cs = CString::new(module_name).unwrap();
-        let path_cs = CString::new(path).unwrap();
-        let source_cs = CString::new(source).unwrap();
-
-        unsafe {
-            let vt = self.0.vtable::<ISessionVtable>();
-            let mut diag: *mut ISlangBlob = null_mut();
-
-            let module_ptr = (vt.loadModuleFromSourceString)(
+    pub fn load_module_from_source(&self, path: &CStr, source: &CStr) -> Result<Module, VKMLError> {
+        let vt = unsafe { self.0.vt::<ISessionVtable>() };
+        let mut diag = null_mut();
+        let ptr = unsafe {
+            (vt.loadModuleFromSourceString)(
                 self.0.as_ptr(),
-                name_cs.as_ptr(),
-                path_cs.as_ptr(),
-                source_cs.as_ptr(),
+                path.as_ptr(),
+                path.as_ptr(),
+                source.as_ptr(),
                 &mut diag,
-            );
-
-            if module_ptr.is_null() {
-                let msg = extract_diagnostics(diag)
-                    .unwrap_or_else(|| format!("Failed to compile Slang module: {module_name}"));
-                return Err(VKMLError::Slang(msg));
-            }
-
-            if !diag.is_null() {
-                let unknown_vt = &**(diag as *mut *mut ISlangUnknown__bindgen_vtable);
-                (unknown_vt.ISlangUnknown_release)(diag as *mut _);
-            }
-
-            // loadModuleFromSourceString returns a session-owned (borrowed) reference
-            Ok(Module(ComPtr::from_borrowed(module_ptr as *mut c_void)))
+            )
+        };
+        let diag_msg = unsafe { extract_diag(diag) };
+        if ptr.is_null() {
+            return Err(VKMLError::Slang(
+                diag_msg.unwrap_or_else(|| format!("Failed to compile module: {path:?}")),
+            ));
         }
+        unsafe { Ok(Module(ComPtr::from_borrowed(ptr as *mut c_void))) }
     }
 
     pub fn create_composite_component_type(
@@ -191,23 +192,20 @@ impl Session {
     ) -> Result<ComponentType, VKMLError> {
         let ptrs: Vec<*const slang_IComponentType> = components
             .iter()
-            .map(|c| c.0.as_ptr() as *const _)
+            .map(|c| c.0.as_ptr() as *const slang_IComponentType)
             .collect();
-
+        let vt = unsafe { self.0.vt::<ISessionVtable>() };
         unsafe {
-            let vt = self.0.vtable::<ISessionVtable>();
-            let mut out = null_mut();
-            let mut diag = null_mut();
-
-            let hr = (vt.createCompositeComponentType)(
-                self.0.as_ptr(),
-                ptrs.as_ptr(),
-                ptrs.len() as SlangInt,
-                &mut out,
-                &mut diag,
-            );
-            check(hr, diag)?;
-            Ok(ComponentType(ComPtr::from_owned(out as *mut c_void)))
+            call_diag(|out, diag| {
+                (vt.createCompositeComponentType)(
+                    self.0.as_ptr(),
+                    ptrs.as_ptr(),
+                    ptrs.len() as SlangInt,
+                    out,
+                    diag,
+                )
+            })
+            .map(ComponentType)
         }
     }
 }
@@ -217,20 +215,17 @@ pub struct Module(ComPtr);
 
 impl Module {
     pub fn find_entry_point_by_name(&self, name: &CStr) -> Option<ComponentType> {
-        unsafe {
-            let vt = self.0.vtable::<IModuleVtable>();
-            let mut ptr: *mut slang_IEntryPoint = null_mut();
-            let hr = (vt.findEntryPointByName)(self.0.as_ptr(), name.as_ptr(), &mut ptr);
-            if hr < 0 || ptr.is_null() {
-                None
-            } else {
-                Some(ComponentType(ComPtr::from_owned(ptr as *mut c_void)))
-            }
-        }
+        let vt = unsafe { self.0.vt::<IModuleVtable>() };
+        let mut ptr = null_mut();
+        let hr = unsafe { (vt.findEntryPointByName)(self.0.as_ptr(), name.as_ptr(), &mut ptr) };
+        (hr >= 0 && !ptr.is_null())
+            .then(|| unsafe { ComponentType(ComPtr::new(ptr as *mut c_void)) })
     }
+}
 
-    /// Module inherits IComponentType, same COM pointer
-    pub fn as_component_type(&self) -> &ComponentType {
+impl std::ops::Deref for Module {
+    type Target = ComponentType;
+    fn deref(&self) -> &Self::Target {
         unsafe { std::mem::transmute(self) }
     }
 }
@@ -244,87 +239,56 @@ impl ComponentType {
         target_index: i64,
         type_name: &CStr,
     ) -> Result<ComponentType, VKMLError> {
-        unsafe {
-            let vt = self.0.vtable::<IComponentTypeVtable>();
+        let vt = unsafe { self.0.vt::<IComponentTypeVtable>() };
+        let mut layout_diag = null_mut();
+        let layout = unsafe { (vt.getLayout)(self.0.as_ptr(), target_index, &mut layout_diag) };
+        let diag_msg = unsafe { extract_diag(layout_diag) };
+        if layout.is_null() {
+            return Err(VKMLError::Slang(diag_msg.unwrap_or_else(|| {
+                format!("Failed to get Slang layout for type '{type_name:?}'")
+            })));
+        }
 
-            let mut layout_diag = null_mut();
-            let layout = (vt.getLayout)(self.0.as_ptr(), target_index, &mut layout_diag);
-            if layout.is_null() {
-                let msg = extract_diagnostics(layout_diag).unwrap_or_else(|| {
-                    format!(
-                        "Failed to get Slang layout when specializing for type '{:?}'",
-                        type_name
-                    )
-                });
-                return Err(VKMLError::Slang(msg));
-            }
-            if !layout_diag.is_null() {
-                let unknown_vt = &**(layout_diag as *mut *mut ISlangUnknown__bindgen_vtable);
-                (unknown_vt.ISlangUnknown_release)(layout_diag as *mut _);
-            }
-
-            let type_reflection = shader_slang_sys::spReflection_FindTypeByName(
+        let type_reflection = unsafe {
+            shader_slang_sys::spReflection_FindTypeByName(
                 layout as *mut shader_slang_sys::SlangReflection,
                 type_name.as_ptr(),
-            );
+            )
+        };
+        if type_reflection.is_null() {
+            return Err(VKMLError::Slang(format!(
+                "Type '{type_name:?}' not found in Slang reflection layout"
+            )));
+        }
 
-            if type_reflection.is_null() {
-                return Err(VKMLError::Slang(format!(
-                    "Type '{:?}' not found in Slang reflection layout",
-                    type_name
-                )));
-            }
+        let arg = slang_SpecializationArg {
+            kind: slang_SpecializationArg_Kind::Type,
+            __bindgen_anon_1: slang_SpecializationArg__bindgen_ty_1 {
+                type_: type_reflection as *mut shader_slang_sys::slang_TypeReflection,
+            },
+        };
 
-            let arg = slang_SpecializationArg {
-                kind: slang_SpecializationArg_Kind::Type,
-                __bindgen_anon_1: slang_SpecializationArg__bindgen_ty_1 {
-                    type_: type_reflection as *mut shader_slang_sys::slang_TypeReflection,
-                },
-            };
-
-            let mut specialized = null_mut();
-            let mut diag = null_mut();
-            let hr = (vt.specialize)(self.0.as_ptr(), &arg, 1, &mut specialized, &mut diag);
-            check(hr, diag)?;
-
-            Ok(ComponentType(ComPtr::from_owned(
-                specialized as *mut c_void,
-            )))
+        unsafe {
+            call_diag(|out, diag| (vt.specialize)(self.0.as_ptr(), &arg, 1, out, diag))
+                .map(ComponentType)
         }
     }
 
     pub fn link(&self) -> Result<ComponentType, VKMLError> {
-        unsafe {
-            let vt = self.0.vtable::<IComponentTypeVtable>();
-            let mut out = null_mut();
-            let mut diag = null_mut();
-            let hr = (vt.link)(self.0.as_ptr(), &mut out, &mut diag);
-            check(hr, diag)?;
-            Ok(ComponentType(ComPtr::from_owned(out as *mut c_void)))
-        }
+        let vt = unsafe { self.0.vt::<IComponentTypeVtable>() };
+        unsafe { call_diag(|out, diag| (vt.link)(self.0.as_ptr(), out, diag)).map(ComponentType) }
     }
 
     pub fn entry_point_code(&self, entry_index: i64, target_index: i64) -> Result<Blob, VKMLError> {
+        let vt = unsafe { self.0.vt::<IComponentTypeVtable>() };
         unsafe {
-            let vt = self.0.vtable::<IComponentTypeVtable>();
-            let mut code = null_mut();
-            let mut diag = null_mut();
-            let hr = (vt.getEntryPointCode)(
-                self.0.as_ptr(),
-                entry_index,
-                target_index,
-                &mut code,
-                &mut diag,
-            );
-            check(hr, diag)?;
-            Ok(Blob(ComPtr::from_owned(code as *mut c_void)))
+            call_diag(|code, diag| {
+                (vt.getEntryPointCode)(self.0.as_ptr(), entry_index, target_index, code, diag)
+            })
+            .map(Blob)
         }
     }
 }
-
-pub use shader_slang_sys::SlangCompileTarget as CompileTarget;
-pub use shader_slang_sys::SlangFloatingPointMode as FloatingPointMode;
-pub use shader_slang_sys::SlangOptimizationLevel as OptimizationLevel;
 
 #[derive(Default)]
 pub struct CompilerOptions {
@@ -340,15 +304,13 @@ macro_rules! int_option {
 }
 
 impl CompilerOptions {
-    fn push_int(mut self, name: slang_CompilerOptionName, v0: i32) -> Self {
+    fn push_int(mut self, name: slang_CompilerOptionName, int_value0: i32) -> Self {
         self.entries.push(slang_CompilerOptionEntry {
             name,
             value: slang_CompilerOptionValue {
                 kind: slang_CompilerOptionValueKind::Int,
-                intValue0: v0,
-                intValue1: 0,
-                stringValue0: null(),
-                stringValue1: null(),
+                intValue0: int_value0,
+                ..unsafe { std::mem::zeroed() }
             },
         });
         self
@@ -363,13 +325,18 @@ impl CompilerOptions {
     }
 
     int_option!(MatrixLayoutRow, matrix_layout_row, bool);
-    int_option!(Optimization, optimization, OptimizationLevel);
-    int_option!(FloatingPointMode, floating_point_mode, FloatingPointMode);
+    int_option!(Optimization, optimization, SlangOptimizationLevel);
+    int_option!(
+        FloatingPointMode,
+        floating_point_mode,
+        SlangFloatingPointMode
+    );
     int_option!(EmitSpirvDirectly, emit_spirv_directly, bool);
     int_option!(SkipSPIRVValidation, skip_spirv_validation, bool);
     int_option!(GLSLForceScalarLayout, glsl_force_scalar_layout, bool);
 }
 
+#[repr(transparent)]
 pub struct TargetDesc {
     pub(crate) inner: slang_TargetDesc,
 }
@@ -386,48 +353,19 @@ impl Default for TargetDesc {
 }
 
 impl TargetDesc {
-    pub fn format(mut self, format: CompileTarget) -> Self {
+    pub fn format(mut self, format: SlangCompileTarget) -> Self {
         self.inner.format = format;
         self
     }
 
-    pub fn profile(mut self, profile: ProfileID) -> Self {
-        self.inner.profile = profile.0;
+    pub fn profile(mut self, profile: SlangProfileID) -> Self {
+        self.inner.profile = profile;
         self
     }
 
-    pub fn options(mut self, opts: &CompilerOptions) -> Self {
-        self.inner.compilerOptionEntries = opts.as_ptr();
-        self.inner.compilerOptionEntryCount = opts.len();
-        self
-    }
-}
-
-pub struct SessionDesc {
-    pub(crate) inner: slang_SessionDesc,
-}
-
-impl Default for SessionDesc {
-    fn default() -> Self {
-        Self {
-            inner: slang_SessionDesc {
-                structureSize: std::mem::size_of::<slang_SessionDesc>(),
-                ..unsafe { std::mem::zeroed() }
-            },
-        }
-    }
-}
-
-impl SessionDesc {
-    pub fn targets(mut self, targets: &[TargetDesc]) -> Self {
-        self.inner.targets = targets.as_ptr() as *const slang_TargetDesc;
-        self.inner.targetCount = targets.len() as SlangInt;
-        self
-    }
-
-    pub fn options(mut self, opts: &CompilerOptions) -> Self {
-        self.inner.compilerOptionEntries = opts.as_ptr();
-        self.inner.compilerOptionEntryCount = opts.len();
+    pub fn options(mut self, options: &CompilerOptions) -> Self {
+        self.inner.compilerOptionEntries = options.as_ptr();
+        self.inner.compilerOptionEntryCount = options.len();
         self
     }
 }

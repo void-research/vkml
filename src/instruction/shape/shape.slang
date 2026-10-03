@@ -19,7 +19,7 @@ PushConstants pc;
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main(
+void main<T : IArithmetic>(
     // We write pairs of uints (low, high) to form 64-bit bounds
     RWStructuredBuffer<uint> dst,
     uint3 threadId: SV_DispatchThreadID)
