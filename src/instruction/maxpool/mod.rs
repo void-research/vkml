@@ -21,23 +21,6 @@ pub static MAXPOOL_1D_SHADER: Shader = slang!("maxpool_1d.slang", 2);
 pub static MAXPOOL_2D_SHADER: Shader = slang!("maxpool_2d.slang", 2);
 pub static MAXPOOL_3D_SHADER: Shader = slang!("maxpool_3d.slang", 2);
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum MaxPoolVariant {
-    D1,
-    D2,
-    D3,
-}
-
-impl MaxPoolVariant {
-    pub fn shader(&self) -> &'static Shader {
-        match self {
-            Self::D1 => &MAXPOOL_1D_SHADER,
-            Self::D2 => &MAXPOOL_2D_SHADER,
-            Self::D3 => &MAXPOOL_3D_SHADER,
-        }
-    }
-}
-
 pub struct MaxPoolInstruction {
     pub src: TensorId,
     pub dst: TensorId,
@@ -62,7 +45,7 @@ impl MaxPoolInstruction {
         pb
     }
 
-    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<MaxPoolVariant> {
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<&'static Shader> {
         let src_desc = cm.tensor_desc(self.src);
         let dst_desc = cm.tensor_desc(self.dst);
 
@@ -72,10 +55,10 @@ impl MaxPoolInstruction {
             0
         };
 
-        let variant = match spatial_rank {
-            0 | 1 => MaxPoolVariant::D1,
-            2 => MaxPoolVariant::D2,
-            3 => MaxPoolVariant::D3,
+        let shader = match spatial_rank {
+            0 | 1 => &MAXPOOL_1D_SHADER,
+            2 => &MAXPOOL_2D_SHADER,
+            3 => &MAXPOOL_3D_SHADER,
             _ => return None,
         };
 
@@ -84,8 +67,8 @@ impl MaxPoolInstruction {
             return None;
         }
 
-        if variant.shader().can_run_on(gpu, dtype) {
-            Some(variant)
+        if shader.can_run_on(gpu, dtype) {
+            Some(shader)
         } else {
             None
         }
@@ -154,7 +137,7 @@ impl Instruction for MaxPoolInstruction {
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        let op_name = self.select_shader(gpu, cm).ok_or_else(|| {
+        let shader = self.select_shader(gpu, cm).ok_or_else(|| {
             VKMLError::Instruction(format!(
                 "GPU MaxPool has no compatible shader for instruction {:?}",
                 self
@@ -176,8 +159,14 @@ impl Instruction for MaxPoolInstruction {
 
         let pb = self.compute_pads(src_desc);
 
-        let (local_size, push_constant_bytes, work_size) = match op_name {
-            MaxPoolVariant::D1 => {
+        let spatial_rank = if src_desc.ndim() >= 2 {
+            src_desc.ndim() - 2
+        } else {
+            0
+        };
+
+        let (local_size, push_constant_bytes, work_size) = match spatial_rank {
+            0 | 1 => {
                 let input_len = if src_dims.len() >= 3 {
                     src_dims[2] as u32
                 } else {
@@ -207,7 +196,7 @@ impl Instruction for MaxPoolInstruction {
                     [total, 1, 1],
                 )
             }
-            MaxPoolVariant::D2 => {
+            2 => {
                 let pc = MaxPool2DPushConstants {
                     n: src_dims[0] as u32,
                     c: src_dims[1] as u32,
@@ -235,7 +224,7 @@ impl Instruction for MaxPoolInstruction {
                     [out_w, out_h, batch_nc],
                 )
             }
-            MaxPoolVariant::D3 => {
+            3 => {
                 let pc = MaxPool3DPushConstants {
                     n: src_dims[0] as u32,
                     c: src_dims[1] as u32,
@@ -270,11 +259,17 @@ impl Instruction for MaxPoolInstruction {
                     [out_w, out_h, total_z],
                 )
             }
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Unsupported spatial rank: {}",
+                    spatial_rank
+                )));
+            }
         };
 
         let dst_dtype = dst_desc.data_type();
-        gpu.bind_slang_compute_pipeline(command_buffer, op_name.shader(), dst_dtype, local_size);
-        gpu.bind_push_constants(command_buffer, op_name.shader(), &push_constant_bytes);
+        gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
+        gpu.bind_push_constants(command_buffer, shader, &push_constant_bytes);
         gpu.dispatch(command_buffer, local_size, work_size);
 
         Ok(())

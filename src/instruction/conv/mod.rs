@@ -330,7 +330,12 @@ impl Instruction for ConvInstruction {
                     [out_w, out_h, total_z],
                 )
             }
-            _ => unreachable!(),
+            _ => {
+                return Err(VKMLError::Instruction(format!(
+                    "Unsupported spatial rank: {}",
+                    spatial_rank
+                )));
+            }
         };
 
         let dst_dtype = dst_desc.data_type();

@@ -20,20 +20,6 @@ use vulkanalia::vk;
 pub static GEMM_SHADER: Shader = slang!("gemm.slang", 4);
 pub static GEMM_TILED_SHADER: Shader = slang!("gemm_tiled.slang", 4);
 
-pub enum GemmVariant {
-    Standard,
-    Tiled,
-}
-
-impl GemmVariant {
-    pub fn shader(&self) -> &'static Shader {
-        match self {
-            Self::Standard => &GEMM_SHADER,
-            Self::Tiled => &GEMM_TILED_SHADER,
-        }
-    }
-}
-
 /// GEMM (General Matrix Multiplication) instruction
 /// Computes Y = alpha * op(A) * op(B) + beta * C
 /// where op(X) is either X or X^T depending on transpose flags
@@ -49,7 +35,7 @@ pub struct GemmInstruction {
 }
 
 impl GemmInstruction {
-    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GemmVariant> {
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<&'static Shader> {
         let a_desc = cm.tensor_desc(self.a);
         let b_desc = cm.tensor_desc(self.b);
         let y_desc = cm.tensor_desc(self.y);
@@ -74,14 +60,14 @@ impl GemmInstruction {
         )
         .ok()?;
 
-        let variant = if gpu.max_shared_memory_size() >= 512 && (m as u64) >= 8 && (n as u64) >= 8 {
-            GemmVariant::Tiled
+        let shader = if gpu.max_shared_memory_size() >= 512 && (m as u64) >= 8 && (n as u64) >= 8 {
+            &GEMM_TILED_SHADER
         } else {
-            GemmVariant::Standard
+            &GEMM_SHADER
         };
 
-        if variant.shader().can_run_on(gpu, y_dtype) {
-            Some(variant)
+        if shader.can_run_on(gpu, y_dtype) {
+            Some(shader)
         } else {
             None
         }
@@ -160,7 +146,7 @@ impl Instruction for GemmInstruction {
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        let op_name = self.select_shader(gpu, cm).ok_or_else(|| {
+        let shader = self.select_shader(gpu, cm).ok_or_else(|| {
             VKMLError::Instruction(format!(
                 "GPU Gemm has no compatible shader for instruction {:?}",
                 self
@@ -229,21 +215,20 @@ impl Instruction for GemmInstruction {
 
         let y_dtype = y_tensor.desc().data_type();
 
-        let local_size = match op_name {
-            GemmVariant::Standard => gpu.workgroup_size_2d(),
-            GemmVariant::Tiled => {
-                let bytes_per_thread = 2 * y_dtype.size_in_bytes().unwrap_or(4);
-                let tile_dim = gpu.optimal_tiled_matrix_size(m as u32, n as u32, bytes_per_thread);
-                [tile_dim, tile_dim, 1]
-            }
+        let local_size = if shader == &GEMM_TILED_SHADER {
+            let bytes_per_thread = 2 * y_dtype.size_in_bytes().unwrap_or(4);
+            let tile_dim = gpu.optimal_tiled_matrix_size(m as u32, n as u32, bytes_per_thread);
+            [tile_dim, tile_dim, 1]
+        } else {
+            gpu.workgroup_size_2d()
         };
 
-        gpu.bind_slang_compute_pipeline(command_buffer, op_name.shader(), y_dtype, local_size);
+        gpu.bind_slang_compute_pipeline(command_buffer, shader, y_dtype, local_size);
         gpu.bind_storage_buffers_optional(
             command_buffer,
             &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
         );
-        gpu.bind_push_constants(command_buffer, op_name.shader(), as_bytes(&pc));
+        gpu.bind_push_constants(command_buffer, shader, as_bytes(&pc));
         gpu.dispatch(command_buffer, local_size, [n as u32, m as u32, 1]);
 
         Ok(())
