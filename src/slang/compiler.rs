@@ -1,4 +1,4 @@
-use crate::instruction::GpuShader;
+use crate::instruction::Shader;
 use crate::slang::wrapper::{
     Blob, CompilerOptions, ComponentType, GlobalSession, Session, TargetDesc,
 };
@@ -11,30 +11,29 @@ use std::sync::RwLock;
 
 struct SlangInner {
     session: Session,
-    module_cache: HashMap<GpuShader, ComponentType>,
-    blob_cache: HashMap<(GpuShader, DataType), Blob>,
+    module_cache: HashMap<&'static Shader, ComponentType>,
+    blob_cache: HashMap<(&'static Shader, DataType), Blob>,
 }
 
 impl SlangInner {
-    fn compile(&mut self, op: GpuShader, dtype: DataType) -> Result<Blob, VKMLError> {
-        let key = (op, dtype);
+    fn compile(&mut self, shader: &'static Shader, dtype: DataType) -> Result<Blob, VKMLError> {
+        let key = (shader, dtype);
 
         if let Some(blob) = self.blob_cache.get(&key) {
             return Ok(blob.clone());
         }
 
-        let program = match self.module_cache.get(&op) {
+        let program = match self.module_cache.get(&shader) {
             Some(program) => program.clone(),
             None => {
-                let info = op.info();
                 let module = self
                     .session
-                    .load_module_from_source(info.path, info.source)?;
+                    .load_module_from_source(shader.path, shader.source)?;
 
                 let entry_point = module.find_entry_point_by_name(c"main").ok_or_else(|| {
                     VKMLError::Slang(format!(
                         "Entry point 'main' not found in module {:?}",
-                        info.path
+                        shader.path
                     ))
                 })?;
 
@@ -42,7 +41,7 @@ impl SlangInner {
                     .session
                     .create_composite_component_type(&[&module, &entry_point])?;
 
-                self.module_cache.insert(op, program.clone());
+                self.module_cache.insert(shader, program.clone());
                 program
             }
         };
@@ -98,10 +97,10 @@ impl SlangCompiler {
         })
     }
 
-    /// Compiles a GpuShader and DataType to SPIR-V blob.
+    /// Compiles a Shader and DataType to SPIR-V blob.
     /// Thread-safe, checks read lock before upgrading to write lock on cache miss.
-    pub fn compile(&self, op: GpuShader, dtype: DataType) -> Result<Blob, VKMLError> {
-        let key = (op, dtype);
+    pub fn compile(&self, shader: &'static Shader, dtype: DataType) -> Result<Blob, VKMLError> {
+        let key = (shader, dtype);
 
         // 1. Fast read lock check
         {
@@ -112,6 +111,6 @@ impl SlangCompiler {
         }
 
         let mut guard = self.inner.write().unwrap();
-        guard.compile(op, dtype)
+        guard.compile(shader, dtype)
     }
 }

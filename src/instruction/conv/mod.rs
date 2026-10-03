@@ -6,18 +6,21 @@ use crate::VKMLError;
 use crate::instruction::conv::push_constants::{
     Conv1DPushConstants, Conv2DPushConstants, Conv3DPushConstants,
 };
-use crate::tensor::TensorDesc;
-use crate::utils::bytes::as_bytes;
-use crate::utils::{OnnxAutoPad, calc_begin_and_end_pads};
+use crate::utils::{OnnxAutoPad, as_bytes, calc_begin_and_end_pads};
 use crate::{
     gpu::Gpu,
-    instruction::{GpuShader, Instruction, conv::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu},
-    tensor::ComputeTarget,
+    instruction::{Instruction, Shader, conv::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu, slang},
+    tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,
 };
+
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static CONV_1D_SHADER: Shader = slang!("conv_1d.slang", 4);
+pub static CONV_2D_SHADER: Shader = slang!("conv_2d.slang", 4);
+pub static CONV_3D_SHADER: Shader = slang!("conv_3d.slang", 4);
 
 pub struct ConvInstruction {
     pub src: TensorId,
@@ -46,7 +49,7 @@ impl ConvInstruction {
         pb
     }
 
-    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GpuShader> {
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<&'static Shader> {
         let src_desc = cm.tensor_desc(self.src);
         let weights_desc = cm.tensor_desc(self.weights);
         let dst_desc = cm.tensor_desc(self.dst);
@@ -70,9 +73,9 @@ impl ConvInstruction {
         };
 
         let shader = match spatial_rank {
-            0 | 1 => GpuShader::Conv_1D,
-            2 => GpuShader::Conv_2D,
-            3 => GpuShader::Conv_3D,
+            0 | 1 => &CONV_1D_SHADER,
+            2 => &CONV_2D_SHADER,
+            3 => &CONV_3D_SHADER,
             _ => return None,
         };
 
@@ -87,7 +90,7 @@ impl ConvInstruction {
             return None;
         }
 
-        if shader.info().can_run_on(gpu, dtype) {
+        if shader.can_run_on(gpu, dtype) {
             Some(shader)
         } else {
             None
@@ -185,7 +188,7 @@ impl Instruction for ConvInstruction {
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        let op_name = self.select_shader(gpu, cm).ok_or_else(|| {
+        let shader = self.select_shader(gpu, cm).ok_or_else(|| {
             VKMLError::Instruction(format!(
                 "GPU Conv has no compatible shader for instruction {:?}",
                 self
@@ -219,7 +222,7 @@ impl Instruction for ConvInstruction {
             0
         };
 
-        match spatial_rank {
+        let (local_size, push_constant_bytes, work_size) = match spatial_rank {
             0 | 1 => {
                 // 1D shader
                 let input_len = if src_dims.len() >= 3 {
@@ -247,26 +250,12 @@ impl Instruction for ConvInstruction {
                     has_bias: if self.bias.is_some() { 1 } else { 0 },
                 };
 
-                let push_constant_bytes = as_bytes(&pc_values);
-
-                // Bind pipeline and descriptors (preserve optional bias binding)
-                // choose an optimal local workgroup size for this 1D workload
                 let total = (src_dims[0] as u32) * (dst_dims[1] as u32) * output_len;
-                let local_size = gpu.workgroup_size_1d();
-
-                let dst_dtype = dst_desc.data_type();
-
-                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
-                gpu.bind_storage_buffers_optional(
-                    command_buffer,
-                    &[Some(src_mem), Some(weights_mem), Some(dst_mem), bias_mem],
-                );
-
-                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
-
-                // dispatch: provide total work counts per-dimension; Gpu::dispatch will
-                // compute the needed number of workgroups as ceil(work/local_size)
-                gpu.dispatch(command_buffer, local_size, [total, 1, 1]);
+                (
+                    gpu.workgroup_size_1d(),
+                    as_bytes(&pc_values).to_vec(),
+                    [total, 1, 1],
+                )
             }
             2 => {
                 // 2D shader
@@ -290,27 +279,15 @@ impl Instruction for ConvInstruction {
                     has_bias: if self.bias.is_some() { 1 } else { 0 },
                 };
 
-                let push_constant_bytes = as_bytes(&pc_values);
-
-                // choose a 2D tile size suitable for (out_h x out_w) work
                 let out_w = dst_dims[3] as u32;
                 let out_h = dst_dims[2] as u32;
                 let batch_nm = (dst_dims[0] as u32) * (dst_dims[1] as u32); // n * m
 
-                let local_size = gpu.workgroup_size_2d();
-
-                let dst_dtype = dst_desc.data_type();
-
-                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
-                gpu.bind_storage_buffers_optional(
-                    command_buffer,
-                    &[Some(src_mem), Some(weights_mem), Some(dst_mem), bias_mem],
-                );
-
-                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
-
-                // dispatch using total work extents (width, height, batch)
-                gpu.dispatch(command_buffer, local_size, [out_w, out_h, batch_nm]);
+                (
+                    gpu.workgroup_size_2d(),
+                    as_bytes(&pc_values).to_vec(),
+                    [out_w, out_h, batch_nm],
+                )
             }
             3 => {
                 // 3D shader
@@ -340,8 +317,6 @@ impl Instruction for ConvInstruction {
                     has_bias: if self.bias.is_some() { 1 } else { 0 },
                 };
 
-                let push_constant_bytes = as_bytes(&pc_values);
-
                 let out_w = dst_dims[4] as u32;
                 let out_h = dst_dims[3] as u32;
                 let out_d = dst_dims[2] as u32;
@@ -349,24 +324,23 @@ impl Instruction for ConvInstruction {
                 // total_z includes depth * batch (n * m)
                 let total_z = (out_d) * (dst_dims[0] as u32) * (dst_dims[1] as u32);
 
-                // pick a cubic local workgroup size based on spatial dims
-                let local_size = gpu.workgroup_size_3d();
-
-                let dst_dtype = dst_desc.data_type();
-
-                gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
-                gpu.bind_storage_buffers_optional(
-                    command_buffer,
-                    &[Some(src_mem), Some(weights_mem), Some(dst_mem), bias_mem],
-                );
-
-                gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
-
-                // dispatch over (w, h, depth * batch)
-                gpu.dispatch(command_buffer, local_size, [out_w, out_h, total_z]);
+                (
+                    gpu.workgroup_size_3d(),
+                    as_bytes(&pc_values).to_vec(),
+                    [out_w, out_h, total_z],
+                )
             }
             _ => unreachable!(),
-        }
+        };
+
+        let dst_dtype = dst_desc.data_type();
+        gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
+        gpu.bind_storage_buffers_optional(
+            command_buffer,
+            &[Some(src_mem), Some(weights_mem), Some(dst_mem), bias_mem],
+        );
+        gpu.bind_push_constants(command_buffer, shader, &push_constant_bytes);
+        gpu.dispatch(command_buffer, local_size, work_size);
 
         Ok(())
     }

@@ -7,17 +7,47 @@ use crate::instruction::matmul::push_constants::{
     MatMul1D2DPushConstants, MatMul1D3DPushConstants, MatMul2D1DPushConstants,
     MatMul2D2DPushConstants, MatMul3D1DPushConstants, MatMulTiledPushConstants,
 };
-use crate::utils::bytes::as_bytes;
+use crate::utils::as_bytes;
 use crate::{
     ComputeManager,
     gpu::Gpu,
-    instruction::{GpuShader, Instruction},
+    instruction::{Instruction, Shader, slang},
     tensor::{ComputeTarget, Tensor},
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static MATMUL_1D2D: Shader = slang!("matmul_1d2d.slang", 3);
+pub static MATMUL_2D1D: Shader = slang!("matmul_2d1d.slang", 3);
+pub static MATMUL_2D2D: Shader = slang!("matmul_2d2d.slang", 3);
+pub static MATMUL_3D1D: Shader = slang!("matmul_3d1d.slang", 3);
+pub static MATMUL_1D3D: Shader = slang!("matmul_1d3d.slang", 3);
+pub static MATMUL_TILED: Shader = slang!("matmul_tiled.slang", 3);
+
+#[derive(PartialEq)]
+pub enum MatMulVariant {
+    D1D2,
+    D2D1,
+    D2D2,
+    D3D1,
+    D1D3,
+    Tiled,
+}
+
+impl MatMulVariant {
+    pub fn shader(&self) -> &'static Shader {
+        match self {
+            Self::D1D2 => &MATMUL_1D2D,
+            Self::D2D1 => &MATMUL_2D1D,
+            Self::D2D2 => &MATMUL_2D2D,
+            Self::D3D1 => &MATMUL_3D1D,
+            Self::D1D3 => &MATMUL_1D3D,
+            Self::Tiled => &MATMUL_TILED,
+        }
+    }
+}
 
 pub struct MatMulInstruction {
     pub src1: TensorId,
@@ -26,7 +56,7 @@ pub struct MatMulInstruction {
 }
 
 impl MatMulInstruction {
-    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GpuShader> {
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<MatMulVariant> {
         let src1_desc = cm.tensor_desc(self.src1);
         let src2_desc = cm.tensor_desc(self.src2);
         let dst_desc = cm.tensor_desc(self.dst);
@@ -43,28 +73,28 @@ impl MatMulInstruction {
         let b_rank = src2_desc.dims().len();
 
         let mut op = match (a_rank, b_rank) {
-            (1, 2) => GpuShader::MatMul_1D2D,
-            (2, 1) => GpuShader::MatMul_2D1D,
-            (2, 2) => GpuShader::MatMul_2D2D,
-            (2, 3) | (3, 2) | (3, 3) => GpuShader::MatMul_Tiled,
-            (3, 1) => GpuShader::MatMul_3D1D,
-            (1, 3) => GpuShader::MatMul_1D3D,
+            (1, 2) => MatMulVariant::D1D2,
+            (2, 1) => MatMulVariant::D2D1,
+            (2, 2) => MatMulVariant::D2D2,
+            (2, 3) | (3, 2) | (3, 3) => MatMulVariant::Tiled,
+            (3, 1) => MatMulVariant::D3D1,
+            (1, 3) => MatMulVariant::D1D3,
             _ => return None,
         };
 
-        if op == GpuShader::MatMul_2D2D {
+        if op == MatMulVariant::D2D2 {
             let m = src1_desc.dims()[0] as u64;
             let n = src2_desc.dims()[1] as u64;
             if m == 1 {
-                op = GpuShader::MatMul_1D2D;
+                op = MatMulVariant::D1D2;
             } else if n == 1 {
-                op = GpuShader::MatMul_2D1D;
+                op = MatMulVariant::D2D1;
             } else if gpu.max_shared_memory_size() >= 512 && m >= 8 && n >= 8 {
-                op = GpuShader::MatMul_Tiled;
+                op = MatMulVariant::Tiled;
             }
         }
 
-        if op.info().can_run_on(gpu, dst_dtype) {
+        if op.shader().can_run_on(gpu, dst_dtype) {
             Some(op)
         } else {
             None
@@ -205,7 +235,7 @@ fn execute_gpu_matmul(
     src1_tensor: &Tensor,
     src2_tensor: &Tensor,
     dst_tensor: &Tensor,
-    operation: GpuShader,
+    operation: MatMulVariant,
 ) -> Result<(), VKMLError> {
     let src1_mem = src1_tensor.get_gpu_memory_or_panic();
     let src2_mem = src2_tensor.get_gpu_memory_or_panic();
@@ -222,7 +252,7 @@ fn execute_gpu_matmul(
     // Configure based on operation type
     // Pass actual output dimensions to dispatch
     let (local_size, push_constants_bytes, work_size) = match operation {
-        GpuShader::MatMul_1D2D => {
+        MatMulVariant::D1D2 => {
             // [1, k] or [k] × [k, n] → [1, n] or [n]
             let k = *src1_dims.last().unwrap();
             let n = src2_dims[1];
@@ -259,7 +289,7 @@ fn execute_gpu_matmul(
             }
         }
 
-        GpuShader::MatMul_2D1D => {
+        MatMulVariant::D2D1 => {
             // [m, k] × [k, 1] or [k] → [m, 1] or [m]
             let m = src1_dims[0];
             let k = src1_dims[1];
@@ -296,7 +326,7 @@ fn execute_gpu_matmul(
             }
         }
 
-        GpuShader::MatMul_2D2D => {
+        MatMulVariant::D2D2 => {
             // [m,k] × [k,n] → [m,n]
             let m = src1_dims[0];
             let k = src1_dims[1];
@@ -321,7 +351,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GpuShader::MatMul_Tiled => {
+        MatMulVariant::Tiled => {
             let a_rank = src1_dims.len();
             let b_rank = src2_dims.len();
 
@@ -469,7 +499,7 @@ fn execute_gpu_matmul(
             )
         }
 
-        GpuShader::MatMul_3D1D => {
+        MatMulVariant::D3D1 => {
             // [batch,m,k] × [k] → [batch,m]
             let batch = src1_dims[0];
             let m = src1_dims[1];
@@ -493,7 +523,7 @@ fn execute_gpu_matmul(
             (local_size, as_bytes(&pc).to_vec(), [total, 1, 1])
         }
 
-        GpuShader::MatMul_1D3D => {
+        MatMulVariant::D1D3 => {
             // [k] × [batch,k,n] → [batch,n]
             let k = src1_dims[0];
             let batch = src2_dims[0];
@@ -516,18 +546,11 @@ fn execute_gpu_matmul(
             let local_size = gpu.workgroup_size_1d();
             (local_size, as_bytes(&pc).to_vec(), [total, 1, 1])
         }
-
-        _ => {
-            return Err(VKMLError::Instruction(format!(
-                "Unsupported MatMul operation: {:?}",
-                operation
-            )));
-        }
     };
 
-    gpu.bind_slang_compute_pipeline(command_buffer, operation, dst_dtype, local_size);
+    gpu.bind_slang_compute_pipeline(command_buffer, operation.shader(), dst_dtype, local_size);
     gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
-    gpu.bind_push_constants(command_buffer, operation, &push_constants_bytes);
+    gpu.bind_push_constants(command_buffer, operation.shader(), &push_constants_bytes);
     gpu.dispatch(command_buffer, local_size, work_size);
 
     Ok(())

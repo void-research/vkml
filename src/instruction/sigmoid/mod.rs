@@ -5,14 +5,15 @@ use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     ComputeManager,
     gpu::Gpu,
-    instruction::{GpuShader, Instruction, sigmoid::f32_f32_cpu::f32_f32_cpu},
+    instruction::{FLOAT_TYPES, Instruction, Shader, sigmoid::f32_f32_cpu::f32_f32_cpu, slang},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
-
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static SHADER: Shader = slang!("sigmoid.slang", 2, FLOAT_TYPES);
 
 pub struct SigmoidInstruction {
     pub src: TensorId,
@@ -51,8 +52,8 @@ impl Instruction for SigmoidInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible = src_desc.data_type() == dst_dtype
-                    && GpuShader::Sigmoid.info().can_run_on(gpu, dst_dtype);
+                let compatible =
+                    src_desc.data_type() == dst_dtype && SHADER.can_run_on(gpu, dst_dtype);
                 Ok(compatible)
             }
             ComputeTarget::Cpu => {
@@ -69,8 +70,6 @@ impl Instruction for SigmoidInstruction {
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        let op_name = GpuShader::Sigmoid;
-
         let src_tensor = cm.tensor_read(self.src);
         let src_mem = src_tensor.get_gpu_memory_or_panic();
         let dst_tensor = cm.tensor_read(self.dst);
@@ -82,11 +81,11 @@ impl Instruction for SigmoidInstruction {
 
         let local_size = gpu.workgroup_size_1d();
 
-        gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
+        gpu.bind_slang_compute_pipeline(command_buffer, &SHADER, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
 
         let pc_data = (num_elements as u32).to_ne_bytes();
-        gpu.bind_push_constants(command_buffer, op_name, &pc_data);
+        gpu.bind_push_constants(command_buffer, &SHADER, &pc_data);
 
         gpu.dispatch(command_buffer, local_size, [num_elements as u32, 1, 1]);
 

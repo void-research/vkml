@@ -8,13 +8,15 @@ use crate::utils::as_bytes;
 use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     gpu::Gpu,
-    instruction::{GpuShader, Instruction, sub::f32_f32_f32_cpu::f32_f32_f32_cpu},
+    instruction::{Instruction, Shader, slang, sub::f32_f32_f32_cpu::f32_f32_f32_cpu},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static SHADER: Shader = slang!("sub.slang", 3);
 
 pub struct SubInstruction {
     pub src1: TensorId,
@@ -82,7 +84,7 @@ impl Instruction for SubInstruction {
                 let dst_dtype = dst_desc.data_type();
                 let compatible = src1_desc.data_type() == dst_dtype
                     && src2_desc.data_type() == dst_dtype
-                    && GpuShader::Subtract.info().can_run_on(gpu, dst_dtype);
+                    && SHADER.can_run_on(gpu, dst_dtype);
                 Ok(compatible)
             }
             ComputeTarget::Cpu => {
@@ -100,8 +102,6 @@ impl Instruction for SubInstruction {
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        let op_name = GpuShader::Subtract;
-
         let src1_tensor = cm.tensor_read(self.src1);
         let src1_mem = src1_tensor.get_gpu_memory_or_panic();
         let src2_tensor = cm.tensor_read(self.src2);
@@ -153,10 +153,10 @@ impl Instruction for SubInstruction {
 
         let local_size = gpu.workgroup_size_1d();
 
-        gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
+        gpu.bind_slang_compute_pipeline(command_buffer, &SHADER, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
 
-        gpu.bind_push_constants(command_buffer, op_name, push_constant_bytes);
+        gpu.bind_push_constants(command_buffer, &SHADER, push_constant_bytes);
 
         // Dispatch using local_size and the full work size
         gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);

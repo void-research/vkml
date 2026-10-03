@@ -13,7 +13,7 @@ use vulkanalia::{
 use crate::{
     compute::memory_tracker::MemoryTracker,
     gpu::{VkExtensions, device::allocator::StagingResources},
-    instruction::GpuShader,
+    instruction::Shader,
     slang::SlangCompiler,
     utils::error::VKMLError,
 };
@@ -49,7 +49,7 @@ pub struct Gpu {
     staging_resources: OnceLock<Mutex<StagingResources>>,
 
     // Drop order matters: fields drop top-to-bottom
-    pipelines_slang: RwLock<HashMap<(GpuShader, DataType, [u32; 3]), vk::Pipeline>>,
+    pipelines_slang: RwLock<HashMap<(&'static Shader, DataType, [u32; 3]), vk::Pipeline>>,
     descriptor_set_layouts: Box<[OnceLock<vk::DescriptorSetLayout>]>,
     pipeline_layouts: Box<[OnceLock<vk::PipelineLayout>]>,
     command_pool: vk::CommandPool,

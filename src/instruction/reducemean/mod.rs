@@ -5,7 +5,7 @@ use crate::VKMLError;
 use crate::gpu::Gpu;
 use crate::instruction::reducemean::f32_cpu::f32_cpu;
 use crate::instruction::reducemean::push_constants::ReduceMeanPushConstants;
-use crate::instruction::{Instruction, gpu_operations::GpuShader};
+use crate::instruction::{Instruction, Shader, slang};
 use crate::utils::as_bytes;
 use crate::{
     ComputeManager,
@@ -15,6 +15,8 @@ use crate::{
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static SHADER: Shader = slang!("reducemean.slang", 2);
 
 pub struct ReduceMeanInstruction {
     pub src: TensorId,
@@ -59,8 +61,8 @@ impl Instruction for ReduceMeanInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible = src_desc.data_type() == dst_dtype
-                    && GpuShader::ReduceMean.info().can_run_on(gpu, dst_dtype);
+                let compatible =
+                    src_desc.data_type() == dst_dtype && SHADER.can_run_on(gpu, dst_dtype);
                 Ok(compatible)
             }
             ComputeTarget::Cpu => {
@@ -77,7 +79,7 @@ impl Instruction for ReduceMeanInstruction {
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        let shader = GpuShader::ReduceMean;
+        let shader = &SHADER;
 
         // GPU implementation: two-pass reduction (sum then scale)
         let src_t = cm.tensor_read(self.src);

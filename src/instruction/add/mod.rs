@@ -8,13 +8,16 @@ use crate::utils::as_bytes;
 use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     gpu::Gpu,
-    instruction::{GpuShader, Instruction, add::f32_f32_f32_cpu::f32_f32_f32_cpu},
+    instruction::{Instruction, Shader, add::f32_f32_f32_cpu::f32_f32_f32_cpu, slang},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static ADD_SHADER: Shader = slang!("add.slang", 3);
+pub static ADD_NOSTRIDE_SHADER: Shader = slang!("add_nostride.slang", 3);
 
 pub struct AddInstruction {
     pub src1: TensorId,
@@ -23,7 +26,7 @@ pub struct AddInstruction {
 }
 
 impl AddInstruction {
-    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GpuShader> {
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<&'static Shader> {
         let src1_desc = cm.tensor_desc(self.src1);
         let src2_desc = cm.tensor_desc(self.src2);
         let dst_desc = cm.tensor_desc(self.dst);
@@ -49,12 +52,12 @@ impl AddInstruction {
             && strides_b[0] == 0;
 
         let shader = if use_nostride {
-            GpuShader::Addition_NoStride
+            &ADD_NOSTRIDE_SHADER
         } else {
-            GpuShader::Addition
+            &ADD_SHADER
         };
 
-        if shader.info().can_run_on(gpu, dst_dtype) {
+        if shader.can_run_on(gpu, dst_dtype) {
             Some(shader)
         } else {
             None
@@ -183,7 +186,7 @@ impl Instruction for AddInstruction {
         let dst_dtype = dst_desc.data_type();
         let local_size = gpu.workgroup_size_1d();
 
-        if op_name == GpuShader::Addition_NoStride {
+        if std::ptr::eq(op_name, &ADD_NOSTRIDE_SHADER) {
             gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
             gpu.bind_storage_buffers(command_buffer, &[src1_mem, src2_mem, dst_mem]);
 

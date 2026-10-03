@@ -4,7 +4,7 @@ use vulkanalia::vk::{self, DeviceV1_0, DeviceV1_4, Handle};
 
 use crate::{
     gpu::{Gpu, memory::GpuMemory},
-    instruction::GpuShader,
+    instruction::Shader,
     utils::error::VKMLError,
 };
 
@@ -94,11 +94,11 @@ impl Gpu {
 
     pub fn get_or_create_slang_pipeline(
         &self,
-        op: GpuShader,
+        shader: &'static Shader,
         dtype: DataType,
         local_size: [u32; 3],
     ) -> vk::Pipeline {
-        let key = (op, dtype, local_size);
+        let key = (shader, dtype, local_size);
 
         if let Some(&pipeline) = self.pipelines_slang.read().unwrap().get(&key) {
             return pipeline;
@@ -106,19 +106,15 @@ impl Gpu {
 
         let compiled_blob = self
             .slang
-            .compile(op, dtype)
-            .unwrap_or_else(|e| panic!("Slang compilation failed for {:?}: {}", op, e));
+            .compile(shader, dtype)
+            .unwrap_or_else(|e| panic!("Slang compilation failed for {:?}: {}", shader.path, e));
 
         let pipeline = self
-            .create_pipeline(
-                compiled_blob.as_slice(),
-                local_size,
-                op.info().binding_count,
-            )
+            .create_pipeline(compiled_blob.as_slice(), local_size, shader.binding_count)
             .unwrap_or_else(|_| {
                 panic!(
                     "Slang Pipeline creation failed for {:?} with workgroup {:?}",
-                    op, local_size
+                    shader.path, local_size
                 )
             });
 
@@ -194,12 +190,12 @@ impl Gpu {
     pub fn bind_slang_compute_pipeline(
         &self,
         command_buffer: vk::CommandBuffer,
-        op: GpuShader,
+        shader: &'static Shader,
         dtype: DataType,
         local_size: [u32; 3],
     ) {
         unsafe {
-            let pipeline = self.get_or_create_slang_pipeline(op, dtype, local_size);
+            let pipeline = self.get_or_create_slang_pipeline(shader, dtype, local_size);
             self.device
                 .cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline);
         }
@@ -301,13 +297,13 @@ impl Gpu {
     pub fn bind_push_constants(
         &self,
         command_buffer: vk::CommandBuffer,
-        op: GpuShader,
+        shader: &Shader,
         data: &[u8],
     ) {
         unsafe {
             self.device.cmd_push_constants(
                 command_buffer,
-                self.get_pipeline_layout(op.info().binding_count),
+                self.get_pipeline_layout(shader.binding_count),
                 vk::ShaderStageFlags::COMPUTE,
                 0,
                 data,

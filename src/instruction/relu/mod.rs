@@ -1,18 +1,17 @@
 mod f32_f32_cpu;
 
+use crate::ComputeManager;
 use crate::VKMLError;
+use crate::gpu::Gpu;
+use crate::instruction::{Instruction, Shader, relu::f32_f32_cpu::f32_f32_cpu, slang};
+use crate::tensor::ComputeTarget;
+use crate::tensor_graph::TensorId;
 use crate::utils::math::{broadcast_shape, broadcast_strides};
-use crate::{
-    ComputeManager,
-    gpu::Gpu,
-    instruction::{GpuShader, Instruction, relu::f32_f32_cpu::f32_f32_cpu},
-    tensor::ComputeTarget,
-    tensor_graph::TensorId,
-};
-
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static SHADER: Shader = slang!("relu.slang", 2);
 
 pub struct ReLUInstruction {
     pub src: TensorId,
@@ -51,8 +50,8 @@ impl Instruction for ReLUInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible = src_desc.data_type() == dst_dtype
-                    && GpuShader::ReLU.info().can_run_on(gpu, dst_dtype);
+                let compatible =
+                    src_desc.data_type() == dst_dtype && SHADER.can_run_on(gpu, dst_dtype);
                 Ok(compatible)
             }
             ComputeTarget::Cpu => {
@@ -69,8 +68,6 @@ impl Instruction for ReLUInstruction {
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        let op_name = GpuShader::ReLU;
-
         let src_tensor = cm.tensor_read(self.src);
         let src_mem = src_tensor.get_gpu_memory_or_panic();
         let dst_tensor = cm.tensor_read(self.dst);
@@ -82,12 +79,12 @@ impl Instruction for ReLUInstruction {
 
         let local_size = gpu.workgroup_size_1d();
 
-        gpu.bind_slang_compute_pipeline(command_buffer, op_name, dst_dtype, local_size);
+        gpu.bind_slang_compute_pipeline(command_buffer, &SHADER, dst_dtype, local_size);
 
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
 
         let pc_data = (num_elements as u32).to_ne_bytes();
-        gpu.bind_push_constants(command_buffer, op_name, &pc_data);
+        gpu.bind_push_constants(command_buffer, &SHADER, &pc_data);
 
         gpu.dispatch(command_buffer, local_size, [num_elements as u32, 1, 1]);
 

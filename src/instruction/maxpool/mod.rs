@@ -3,20 +3,40 @@ mod push_constants;
 
 use crate::ComputeManager;
 use crate::VKMLError;
-use crate::instruction::gpu_operations::GpuShader;
 use crate::instruction::maxpool::push_constants::{
     MaxPool1DPushConstants, MaxPool2DPushConstants, MaxPool3DPushConstants,
 };
 use crate::utils::{OnnxAutoPad, as_bytes, calc_begin_and_end_pads};
 use crate::{
     gpu::Gpu,
-    instruction::{Instruction, maxpool::f32_f32_cpu::f32_f32_cpu},
+    instruction::{Instruction, Shader, maxpool::f32_f32_cpu::f32_f32_cpu, slang},
     tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static MAXPOOL_1D_SHADER: Shader = slang!("maxpool_1d.slang", 2);
+pub static MAXPOOL_2D_SHADER: Shader = slang!("maxpool_2d.slang", 2);
+pub static MAXPOOL_3D_SHADER: Shader = slang!("maxpool_3d.slang", 2);
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum MaxPoolVariant {
+    D1,
+    D2,
+    D3,
+}
+
+impl MaxPoolVariant {
+    pub fn shader(&self) -> &'static Shader {
+        match self {
+            Self::D1 => &MAXPOOL_1D_SHADER,
+            Self::D2 => &MAXPOOL_2D_SHADER,
+            Self::D3 => &MAXPOOL_3D_SHADER,
+        }
+    }
+}
 
 pub struct MaxPoolInstruction {
     pub src: TensorId,
@@ -42,7 +62,7 @@ impl MaxPoolInstruction {
         pb
     }
 
-    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GpuShader> {
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<MaxPoolVariant> {
         let src_desc = cm.tensor_desc(self.src);
         let dst_desc = cm.tensor_desc(self.dst);
 
@@ -52,10 +72,10 @@ impl MaxPoolInstruction {
             0
         };
 
-        let shader = match spatial_rank {
-            0 | 1 => GpuShader::MaxPool_1D,
-            2 => GpuShader::MaxPool_2D,
-            3 => GpuShader::MaxPool_3D,
+        let variant = match spatial_rank {
+            0 | 1 => MaxPoolVariant::D1,
+            2 => MaxPoolVariant::D2,
+            3 => MaxPoolVariant::D3,
             _ => return None,
         };
 
@@ -64,8 +84,8 @@ impl MaxPoolInstruction {
             return None;
         }
 
-        if shader.info().can_run_on(gpu, dtype) {
-            Some(shader)
+        if variant.shader().can_run_on(gpu, dtype) {
+            Some(variant)
         } else {
             None
         }
@@ -156,8 +176,8 @@ impl Instruction for MaxPoolInstruction {
 
         let pb = self.compute_pads(src_desc);
 
-        match op_name {
-            GpuShader::MaxPool_1D => {
+        let (local_size, push_constant_bytes, work_size) = match op_name {
+            MaxPoolVariant::D1 => {
                 let input_len = if src_dims.len() >= 3 {
                     src_dims[2] as u32
                 } else {
@@ -180,25 +200,14 @@ impl Instruction for MaxPoolInstruction {
                     pad_begin: pb.first().copied().unwrap_or(0) as u32,
                 };
 
-                let push_constant_bytes = as_bytes(&pc);
-
-                // choose local workgroup size and bind specialized pipeline
                 let total = (src_dims[0] as u32) * (src_dims[1] as u32) * output_len;
-                let local_size = gpu.workgroup_size_1d();
-
-                let dst_dtype = dst_desc.data_type();
-
-                gpu.bind_slang_compute_pipeline(
-                    command_buffer,
-                    GpuShader::MaxPool_1D,
-                    dst_dtype,
-                    local_size,
-                );
-                gpu.bind_push_constants(command_buffer, GpuShader::MaxPool_1D, push_constant_bytes);
-
-                gpu.dispatch(command_buffer, local_size, [total, 1, 1]);
+                (
+                    gpu.workgroup_size_1d(),
+                    as_bytes(&pc).to_vec(),
+                    [total, 1, 1],
+                )
             }
-            GpuShader::MaxPool_2D => {
+            MaxPoolVariant::D2 => {
                 let pc = MaxPool2DPushConstants {
                     n: src_dims[0] as u32,
                     c: src_dims[1] as u32,
@@ -216,28 +225,17 @@ impl Instruction for MaxPoolInstruction {
                     pad_w: pb.get(1).copied().unwrap_or(0) as u32,
                 };
 
-                let push_constant_bytes = as_bytes(&pc);
-
-                // choose local tile size and bind specialized pipeline
                 let out_w = dst_dims[3] as u32;
                 let out_h = dst_dims[2] as u32;
                 let batch_nc = (dst_dims[0] as u32) * (dst_dims[1] as u32); // n * c
 
-                let local_size = gpu.workgroup_size_2d();
-
-                let dst_dtype = dst_desc.data_type();
-
-                gpu.bind_slang_compute_pipeline(
-                    command_buffer,
-                    GpuShader::MaxPool_2D,
-                    dst_dtype,
-                    local_size,
-                );
-                gpu.bind_push_constants(command_buffer, GpuShader::MaxPool_2D, push_constant_bytes);
-
-                gpu.dispatch(command_buffer, local_size, [out_w, out_h, batch_nc]);
+                (
+                    gpu.workgroup_size_2d(),
+                    as_bytes(&pc).to_vec(),
+                    [out_w, out_h, batch_nc],
+                )
             }
-            GpuShader::MaxPool_3D => {
+            MaxPoolVariant::D3 => {
                 let pc = MaxPool3DPushConstants {
                     n: src_dims[0] as u32,
                     c: src_dims[1] as u32,
@@ -261,30 +259,23 @@ impl Instruction for MaxPoolInstruction {
                     pad_w: pb.get(2).copied().unwrap_or(0) as u32,
                 };
 
-                let push_constant_bytes = as_bytes(&pc);
-
                 let out_w = dst_dims[4] as u32;
                 let out_h = dst_dims[3] as u32;
                 let out_d = dst_dims[2] as u32;
-
                 let total_z = out_d * (dst_dims[0] as u32) * (dst_dims[1] as u32);
 
-                let local_size = gpu.workgroup_size_3d();
-
-                let dst_dtype = dst_desc.data_type();
-
-                gpu.bind_slang_compute_pipeline(
-                    command_buffer,
-                    GpuShader::MaxPool_3D,
-                    dst_dtype,
-                    local_size,
-                );
-                gpu.bind_push_constants(command_buffer, GpuShader::MaxPool_3D, push_constant_bytes);
-
-                gpu.dispatch(command_buffer, local_size, [out_w, out_h, total_z]);
+                (
+                    gpu.workgroup_size_3d(),
+                    as_bytes(&pc).to_vec(),
+                    [out_w, out_h, total_z],
+                )
             }
-            _ => unreachable!(),
-        }
+        };
+
+        let dst_dtype = dst_desc.data_type();
+        gpu.bind_slang_compute_pipeline(command_buffer, op_name.shader(), dst_dtype, local_size);
+        gpu.bind_push_constants(command_buffer, op_name.shader(), &push_constant_bytes);
+        gpu.dispatch(command_buffer, local_size, work_size);
 
         Ok(())
     }

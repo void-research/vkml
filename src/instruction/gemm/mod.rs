@@ -9,13 +9,30 @@ use crate::utils::bytes::as_bytes;
 use crate::{
     ComputeManager,
     gpu::Gpu,
-    instruction::{GpuShader, Instruction},
+    instruction::{Instruction, Shader, slang},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static GEMM_SHADER: Shader = slang!("gemm.slang", 4);
+pub static GEMM_TILED_SHADER: Shader = slang!("gemm_tiled.slang", 4);
+
+pub enum GemmVariant {
+    Standard,
+    Tiled,
+}
+
+impl GemmVariant {
+    pub fn shader(&self) -> &'static Shader {
+        match self {
+            Self::Standard => &GEMM_SHADER,
+            Self::Tiled => &GEMM_TILED_SHADER,
+        }
+    }
+}
 
 /// GEMM (General Matrix Multiplication) instruction
 /// Computes Y = alpha * op(A) * op(B) + beta * C
@@ -32,7 +49,7 @@ pub struct GemmInstruction {
 }
 
 impl GemmInstruction {
-    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GpuShader> {
+    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<GemmVariant> {
         let a_desc = cm.tensor_desc(self.a);
         let b_desc = cm.tensor_desc(self.b);
         let y_desc = cm.tensor_desc(self.y);
@@ -57,14 +74,14 @@ impl GemmInstruction {
         )
         .ok()?;
 
-        let shader = if gpu.max_shared_memory_size() >= 512 && (m as u64) >= 8 && (n as u64) >= 8 {
-            GpuShader::Gemm_Tiled
+        let variant = if gpu.max_shared_memory_size() >= 512 && (m as u64) >= 8 && (n as u64) >= 8 {
+            GemmVariant::Tiled
         } else {
-            GpuShader::Gemm
+            GemmVariant::Standard
         };
 
-        if shader.info().can_run_on(gpu, y_dtype) {
-            Some(shader)
+        if variant.shader().can_run_on(gpu, y_dtype) {
+            Some(variant)
         } else {
             None
         }
@@ -210,41 +227,24 @@ impl Instruction for GemmInstruction {
         // Prepare storage buffers with optional C
         let c_gpu_mem = c_tensor.as_ref().map(|t| t.get_gpu_memory_or_panic());
 
-        // Choose optimal workgroup size for 2D matrix operation
-        let local_size = gpu.workgroup_size_2d();
-
         let y_dtype = y_tensor.desc().data_type();
 
-        match op_name {
-            GpuShader::Gemm => {
-                gpu.bind_slang_compute_pipeline(command_buffer, op_name, y_dtype, local_size);
-                gpu.bind_storage_buffers_optional(
-                    command_buffer,
-                    &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
-                );
-                gpu.bind_push_constants(command_buffer, op_name, as_bytes(&pc));
-                gpu.dispatch(command_buffer, local_size, [n as u32, m as u32, 1]);
-            }
-            GpuShader::Gemm_Tiled => {
+        let local_size = match op_name {
+            GemmVariant::Standard => gpu.workgroup_size_2d(),
+            GemmVariant::Tiled => {
                 let bytes_per_thread = 2 * y_dtype.size_in_bytes().unwrap_or(4);
                 let tile_dim = gpu.optimal_tiled_matrix_size(m as u32, n as u32, bytes_per_thread);
-                let tiled_local_size = [tile_dim, tile_dim, 1];
+                [tile_dim, tile_dim, 1]
+            }
+        };
 
-                gpu.bind_slang_compute_pipeline(command_buffer, op_name, y_dtype, tiled_local_size);
-                gpu.bind_storage_buffers_optional(
-                    command_buffer,
-                    &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
-                );
-                gpu.bind_push_constants(command_buffer, GpuShader::Gemm, as_bytes(&pc));
-                gpu.dispatch(command_buffer, tiled_local_size, [n as u32, m as u32, 1]);
-            }
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Invalid GpuShader {:?} for Gemm",
-                    op_name
-                )));
-            }
-        }
+        gpu.bind_slang_compute_pipeline(command_buffer, op_name.shader(), y_dtype, local_size);
+        gpu.bind_storage_buffers_optional(
+            command_buffer,
+            &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
+        );
+        gpu.bind_push_constants(command_buffer, op_name.shader(), as_bytes(&pc));
+        gpu.dispatch(command_buffer, local_size, [n as u32, m as u32, 1]);
 
         Ok(())
     }

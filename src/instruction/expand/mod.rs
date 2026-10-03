@@ -9,13 +9,15 @@ use crate::utils::as_bytes;
 use crate::utils::math::broadcast_strides;
 use crate::{
     gpu::Gpu,
-    instruction::{Instruction, gpu_operations::GpuShader},
+    instruction::{Instruction, Shader, slang},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static SHADER: Shader = slang!("expand.slang", 2);
 
 pub struct ExpandInstruction {
     pub src: TensorId,
@@ -67,8 +69,8 @@ impl Instruction for ExpandInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible = src_desc.data_type() == dst_dtype
-                    && GpuShader::Expand.info().can_run_on(gpu, dst_dtype);
+                let compatible =
+                    src_desc.data_type() == dst_dtype && SHADER.can_run_on(gpu, dst_dtype);
                 Ok(compatible)
             }
             ComputeTarget::Cpu => {
@@ -85,7 +87,7 @@ impl Instruction for ExpandInstruction {
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        let shader = GpuShader::Expand;
+        let shader = &SHADER;
 
         let src_tensor = cm.tensor_read(self.src);
         let src_mem = src_tensor.get_gpu_memory_or_panic();

@@ -8,13 +8,15 @@ use crate::utils::as_bytes;
 
 use crate::{
     gpu::Gpu,
-    instruction::{GpuShader, Instruction, softmax::f32_f32_cpu::f32_f32_cpu},
+    instruction::{FLOAT_TYPES, Instruction, Shader, slang, softmax::f32_f32_cpu::f32_f32_cpu},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static SHADER: Shader = slang!("softmax.slang", 2, FLOAT_TYPES);
 
 pub struct SoftmaxInstruction {
     pub src: TensorId,
@@ -69,8 +71,8 @@ impl Instruction for SoftmaxInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible = src_desc.data_type() == dst_dtype
-                    && GpuShader::Softmax.info().can_run_on(gpu, dst_dtype);
+                let compatible =
+                    src_desc.data_type() == dst_dtype && SHADER.can_run_on(gpu, dst_dtype);
                 Ok(compatible)
             }
             ComputeTarget::Cpu => {
@@ -87,8 +89,6 @@ impl Instruction for SoftmaxInstruction {
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        let op_name = GpuShader::Softmax;
-
         let src_tensor = cm.tensor_read(self.src);
         let src_mem = src_tensor.get_gpu_memory_or_panic();
         let dst_tensor = cm.tensor_read(self.dst);
@@ -110,12 +110,11 @@ impl Instruction for SoftmaxInstruction {
         let dst_dtype = dst_tensor.desc().data_type();
 
         // Standard path
-        let gpu_op = op_name;
         let local_size = [256, 1, 1];
 
-        gpu.bind_slang_compute_pipeline(command_buffer, gpu_op, dst_dtype, local_size);
+        gpu.bind_slang_compute_pipeline(command_buffer, &SHADER, dst_dtype, local_size);
         gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-        gpu.bind_push_constants(command_buffer, gpu_op, pc_bytes);
+        gpu.bind_push_constants(command_buffer, &SHADER, pc_bytes);
 
         gpu.dispatch(
             command_buffer,

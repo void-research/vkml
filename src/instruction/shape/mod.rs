@@ -2,14 +2,16 @@ mod push_constants;
 
 use crate::VKMLError;
 use crate::gpu::Gpu;
-use crate::instruction::gpu_operations::GpuShader;
 use crate::instruction::shape::push_constants::ShapePushConstants;
+use crate::instruction::{Instruction, Shader, slang};
 use crate::tensor::{ComputeTarget, TensorDesc};
 use crate::utils::as_bytes;
-use crate::{ComputeManager, instruction::Instruction, tensor_graph::TensorId};
+use crate::{ComputeManager, tensor_graph::TensorId};
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use vulkanalia::vk;
+
+pub static SHADER: Shader = slang!("shape.slang", 1, &[DataType::Int64]);
 
 pub struct ShapeInstruction {
     pub src: TensorId,
@@ -61,9 +63,7 @@ impl Instruction for ShapeInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible = GpuShader::Shape_Write
-                    .info()
-                    .can_run_on(gpu, DataType::Int64);
+                let compatible = SHADER.can_run_on(gpu, DataType::Int64);
                 Ok(compatible)
             }
             ComputeTarget::Cpu => Ok(true),
@@ -76,7 +76,7 @@ impl Instruction for ShapeInstruction {
         command_buffer: vk::CommandBuffer,
         cm: &ComputeManager,
     ) -> Result<(), VKMLError> {
-        let shader = GpuShader::Shape_Write;
+        let shader = &SHADER;
 
         // Compute shape bytes on host, then upload to GPU via a host-visible staging buffer
         let src_desc = cm.tensor_read(self.src).desc().clone();
