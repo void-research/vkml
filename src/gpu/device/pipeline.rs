@@ -138,6 +138,7 @@ impl Gpu {
             let descriptor_set_layout = self.get_descriptor_set_layout(binding_count);
 
             // 128 bytes is the minimum guaranteed push constant space for the vulkan spec
+            // vk 1.4 did push this to 256 if we ever need it.
             let push_constant_range = vk::PushConstantRange {
                 stage_flags: vk::ShaderStageFlags::COMPUTE,
                 offset: 0,
