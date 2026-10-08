@@ -6,16 +6,17 @@ use crate::VKMLError;
 use crate::instruction::maxpool::push_constants::{
     MaxPool1DPushConstants, MaxPool2DPushConstants, MaxPool3DPushConstants,
 };
-use crate::utils::{OnnxAutoPad, as_bytes, calc_begin_and_end_pads};
+use crate::utils::{OnnxAutoPad, calc_begin_and_end_pads};
 use crate::{
-    gpu::Gpu,
-    instruction::{Instruction, Shader, maxpool::f32_f32_cpu::f32_f32_cpu, slang},
+    instruction::{
+        Dispatch, Instruction, PushConstants, Shader, VkOperation,
+        maxpool::f32_f32_cpu::f32_f32_cpu, slang,
+    },
     tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use vulkanalia::vk;
 
 pub static MAXPOOL_1D_SHADER: Shader = slang!("maxpool_1d.slang", 2);
 pub static MAXPOOL_2D_SHADER: Shader = slang!("maxpool_2d.slang", 2);
@@ -43,35 +44,6 @@ impl MaxPoolInstruction {
             src_desc,
         );
         pb
-    }
-
-    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<&'static Shader> {
-        let src_desc = cm.tensor_desc(self.src);
-        let dst_desc = cm.tensor_desc(self.dst);
-
-        let spatial_rank = if src_desc.ndim() >= 2 {
-            src_desc.ndim() - 2
-        } else {
-            0
-        };
-
-        let shader = match spatial_rank {
-            0 | 1 => &MAXPOOL_1D_SHADER,
-            2 => &MAXPOOL_2D_SHADER,
-            3 => &MAXPOOL_3D_SHADER,
-            _ => return None,
-        };
-
-        let dtype = src_desc.data_type();
-        if dst_desc.data_type() != dtype {
-            return None;
-        }
-
-        if shader.can_run_on(gpu, dtype) {
-            Some(shader)
-        } else {
-            None
-        }
     }
 }
 
@@ -110,8 +82,13 @@ impl Instruction for MaxPoolInstruction {
         }
     }
 
-    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+    fn select_operation(
+        &self,
+        target: &ComputeTarget,
+        cm: &ComputeManager,
+    ) -> Result<Option<Dispatch>, VKMLError> {
         let src_desc = cm.tensor_desc(self.src);
+        let dst_desc = cm.tensor_desc(self.dst);
         let spatial_rank = src_desc.ndim().saturating_sub(2);
         if !(1..=3).contains(&spatial_rank) {
             return Err(VKMLError::Instruction(format!(
@@ -121,158 +98,139 @@ impl Instruction for MaxPoolInstruction {
         }
 
         match target {
-            ComputeTarget::Gpu(gpu) => Ok(self.select_shader(gpu, cm).is_some()),
             ComputeTarget::Cpu => {
-                let dst_desc = cm.tensor_desc(self.dst);
                 let compatible = src_desc.data_type() == DataType::Float
                     && dst_desc.data_type() == DataType::Float;
-                Ok(compatible)
+                if compatible {
+                    Ok(Some(Dispatch::Cpu))
+                } else {
+                    Ok(None)
+                }
+            }
+            ComputeTarget::Gpu(gpu) => {
+                let dtype = src_desc.data_type();
+                if dst_desc.data_type() != dtype {
+                    return Ok(None);
+                }
+
+                let src_dims = src_desc.dims();
+                let dst_dims = dst_desc.dims();
+                let pb = self.compute_pads(src_desc);
+
+                let (shader, local_size, push_constants, work_size) = match spatial_rank {
+                    1 => {
+                        let input_len = if src_dims.len() >= 3 {
+                            src_dims[2] as u32
+                        } else {
+                            1
+                        };
+                        let output_len = if dst_dims.len() >= 3 {
+                            dst_dims[2] as u32
+                        } else {
+                            1
+                        };
+
+                        let pc = MaxPool1DPushConstants {
+                            n: src_dims[0] as u32,
+                            c: src_dims[1] as u32,
+                            input_len,
+                            output_len,
+                            kernel: self.kernel_shape.first().copied().unwrap_or(1) as u32,
+                            stride: self.strides.first().copied().unwrap_or(1) as u32,
+                            dilation: self.dilations.first().copied().unwrap_or(1) as u32,
+                            pad_begin: pb.first().copied().unwrap_or(0) as u32,
+                        };
+
+                        let total = (src_dims[0] as u32) * (src_dims[1] as u32) * output_len;
+                        (
+                            &MAXPOOL_1D_SHADER,
+                            gpu.workgroup_size_1d(),
+                            PushConstants::from_struct(&pc),
+                            [total, 1, 1],
+                        )
+                    }
+                    2 => {
+                        let pc = MaxPool2DPushConstants {
+                            n: src_dims[0] as u32,
+                            c: src_dims[1] as u32,
+                            in_h: src_dims[2] as u32,
+                            in_w: src_dims[3] as u32,
+                            out_h: dst_dims[2] as u32,
+                            out_w: dst_dims[3] as u32,
+                            k_h: self.kernel_shape.first().copied().unwrap_or(1) as u32,
+                            k_w: self.kernel_shape.get(1).copied().unwrap_or(1) as u32,
+                            s_h: self.strides.first().copied().unwrap_or(1) as u32,
+                            s_w: self.strides.get(1).copied().unwrap_or(1) as u32,
+                            d_h: self.dilations.first().copied().unwrap_or(1) as u32,
+                            d_w: self.dilations.get(1).copied().unwrap_or(1) as u32,
+                            pad_h: pb.first().copied().unwrap_or(0) as u32,
+                            pad_w: pb.get(1).copied().unwrap_or(0) as u32,
+                        };
+
+                        let out_w = dst_dims[3] as u32;
+                        let out_h = dst_dims[2] as u32;
+                        let batch_nc = (dst_dims[0] as u32) * (dst_dims[1] as u32);
+
+                        (
+                            &MAXPOOL_2D_SHADER,
+                            gpu.workgroup_size_2d(),
+                            PushConstants::from_struct(&pc),
+                            [out_w, out_h, batch_nc],
+                        )
+                    }
+                    3 => {
+                        let pc = MaxPool3DPushConstants {
+                            n: src_dims[0] as u32,
+                            c: src_dims[1] as u32,
+                            in_d: src_dims[2] as u32,
+                            in_h: src_dims[3] as u32,
+                            in_w: src_dims[4] as u32,
+                            out_d: dst_dims[2] as u32,
+                            out_h: dst_dims[3] as u32,
+                            out_w: dst_dims[4] as u32,
+                            k_d: self.kernel_shape.first().copied().unwrap_or(1) as u32,
+                            k_h: self.kernel_shape.get(1).copied().unwrap_or(1) as u32,
+                            k_w: self.kernel_shape.get(2).copied().unwrap_or(1) as u32,
+                            s_d: self.strides.first().copied().unwrap_or(1) as u32,
+                            s_h: self.strides.get(1).copied().unwrap_or(1) as u32,
+                            s_w: self.strides.get(2).copied().unwrap_or(1) as u32,
+                            d_d: self.dilations.first().copied().unwrap_or(1) as u32,
+                            d_h: self.dilations.get(1).copied().unwrap_or(1) as u32,
+                            d_w: self.dilations.get(2).copied().unwrap_or(1) as u32,
+                            pad_d: pb.first().copied().unwrap_or(0) as u32,
+                            pad_h: pb.get(1).copied().unwrap_or(0) as u32,
+                            pad_w: pb.get(2).copied().unwrap_or(0) as u32,
+                        };
+
+                        let out_w = dst_dims[4] as u32;
+                        let out_h = dst_dims[3] as u32;
+                        let out_d = dst_dims[2] as u32;
+                        let total_z = out_d * (dst_dims[0] as u32) * (dst_dims[1] as u32);
+
+                        (
+                            &MAXPOOL_3D_SHADER,
+                            gpu.workgroup_size_3d(),
+                            PushConstants::from_struct(&pc),
+                            [out_w, out_h, total_z],
+                        )
+                    }
+                    _ => unreachable!(),
+                };
+
+                if !gpu.supports_dtype(dtype) || !shader.supported_types.contains(&dtype) {
+                    return Ok(None);
+                }
+
+                Ok(Some(Dispatch::Gpu(VkOperation::Compute {
+                    shader,
+                    dtype,
+                    local_size,
+                    work_size,
+                    push_constants,
+                    storage_buffers: vec![Some(self.src), Some(self.dst)],
+                })))
             }
         }
-    }
-
-    fn record_into_command_buffer(
-        &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
-        let shader = self.select_shader(gpu, cm).ok_or_else(|| {
-            VKMLError::Instruction(format!(
-                "GPU MaxPool has no compatible shader for instruction {:?}",
-                self
-            ))
-        })?;
-
-        // GPU implementation: bind src(0) and dst(2), push constants and dispatch.
-        let src_tensor = cm.tensor_read(self.src);
-        let dst_tensor = cm.tensor_read(self.dst);
-
-        let src_mem = src_tensor.get_gpu_memory_or_panic();
-        let dst_mem = dst_tensor.get_gpu_memory_or_panic();
-
-        let src_desc = src_tensor.desc();
-        let src_dims = src_desc.dims();
-        let dst_desc = dst_tensor.desc();
-        let dst_dims = dst_desc.dims();
-        gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-
-        let pb = self.compute_pads(src_desc);
-
-        let spatial_rank = if src_desc.ndim() >= 2 {
-            src_desc.ndim() - 2
-        } else {
-            0
-        };
-
-        let (local_size, push_constant_bytes, work_size) = match spatial_rank {
-            0 | 1 => {
-                let input_len = if src_dims.len() >= 3 {
-                    src_dims[2] as u32
-                } else {
-                    1
-                };
-                let output_len = if dst_dims.len() >= 3 {
-                    dst_dims[2] as u32
-                } else {
-                    1
-                };
-
-                let pc = MaxPool1DPushConstants {
-                    n: src_dims[0] as u32,
-                    c: src_dims[1] as u32,
-                    input_len,
-                    output_len,
-                    kernel: self.kernel_shape.first().copied().unwrap_or(1) as u32,
-                    stride: self.strides.first().copied().unwrap_or(1) as u32,
-                    dilation: self.dilations.first().copied().unwrap_or(1) as u32,
-                    pad_begin: pb.first().copied().unwrap_or(0) as u32,
-                };
-
-                let total = (src_dims[0] as u32) * (src_dims[1] as u32) * output_len;
-                (
-                    gpu.workgroup_size_1d(),
-                    as_bytes(&pc).to_vec(),
-                    [total, 1, 1],
-                )
-            }
-            2 => {
-                let pc = MaxPool2DPushConstants {
-                    n: src_dims[0] as u32,
-                    c: src_dims[1] as u32,
-                    in_h: src_dims[2] as u32,
-                    in_w: src_dims[3] as u32,
-                    out_h: dst_dims[2] as u32,
-                    out_w: dst_dims[3] as u32,
-                    k_h: self.kernel_shape.first().copied().unwrap_or(1) as u32,
-                    k_w: self.kernel_shape.get(1).copied().unwrap_or(1) as u32,
-                    s_h: self.strides.first().copied().unwrap_or(1) as u32,
-                    s_w: self.strides.get(1).copied().unwrap_or(1) as u32,
-                    d_h: self.dilations.first().copied().unwrap_or(1) as u32,
-                    d_w: self.dilations.get(1).copied().unwrap_or(1) as u32,
-                    pad_h: pb.first().copied().unwrap_or(0) as u32,
-                    pad_w: pb.get(1).copied().unwrap_or(0) as u32,
-                };
-
-                let out_w = dst_dims[3] as u32;
-                let out_h = dst_dims[2] as u32;
-                let batch_nc = (dst_dims[0] as u32) * (dst_dims[1] as u32); // n * c
-
-                (
-                    gpu.workgroup_size_2d(),
-                    as_bytes(&pc).to_vec(),
-                    [out_w, out_h, batch_nc],
-                )
-            }
-            3 => {
-                let pc = MaxPool3DPushConstants {
-                    n: src_dims[0] as u32,
-                    c: src_dims[1] as u32,
-                    in_d: src_dims[2] as u32,
-                    in_h: src_dims[3] as u32,
-                    in_w: src_dims[4] as u32,
-                    out_d: dst_dims[2] as u32,
-                    out_h: dst_dims[3] as u32,
-                    out_w: dst_dims[4] as u32,
-                    k_d: self.kernel_shape.first().copied().unwrap_or(1) as u32,
-                    k_h: self.kernel_shape.get(1).copied().unwrap_or(1) as u32,
-                    k_w: self.kernel_shape.get(2).copied().unwrap_or(1) as u32,
-                    s_d: self.strides.first().copied().unwrap_or(1) as u32,
-                    s_h: self.strides.get(1).copied().unwrap_or(1) as u32,
-                    s_w: self.strides.get(2).copied().unwrap_or(1) as u32,
-                    d_d: self.dilations.first().copied().unwrap_or(1) as u32,
-                    d_h: self.dilations.get(1).copied().unwrap_or(1) as u32,
-                    d_w: self.dilations.get(2).copied().unwrap_or(1) as u32,
-                    pad_d: pb.first().copied().unwrap_or(0) as u32,
-                    pad_h: pb.get(1).copied().unwrap_or(0) as u32,
-                    pad_w: pb.get(2).copied().unwrap_or(0) as u32,
-                };
-
-                let out_w = dst_dims[4] as u32;
-                let out_h = dst_dims[3] as u32;
-                let out_d = dst_dims[2] as u32;
-                let total_z = out_d * (dst_dims[0] as u32) * (dst_dims[1] as u32);
-
-                (
-                    gpu.workgroup_size_3d(),
-                    as_bytes(&pc).to_vec(),
-                    [out_w, out_h, total_z],
-                )
-            }
-            _ => {
-                return Err(VKMLError::Instruction(format!(
-                    "Unsupported spatial rank: {}",
-                    spatial_rank
-                )));
-            }
-        };
-
-        let dst_dtype = dst_desc.data_type();
-        gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
-        gpu.bind_push_constants(command_buffer, shader, &push_constant_bytes);
-        gpu.dispatch(command_buffer, local_size, work_size);
-
-        Ok(())
     }
 
     fn execute_cpu(&self, cm: &ComputeManager) {

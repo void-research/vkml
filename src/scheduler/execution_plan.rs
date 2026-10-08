@@ -5,6 +5,7 @@ use vulkanalia::vk::{self, DeviceV1_0};
 use crate::TensorGraph;
 use crate::compute::compute_manager::ComputeManager;
 use crate::gpu::Gpu;
+use crate::instruction::Dispatch;
 use crate::tensor::ComputeTarget;
 use crate::tensor_graph::{DependencyGraph, OperationId, TensorId};
 use crate::utils::error::VKMLError;
@@ -325,8 +326,19 @@ fn create_gpu_chunk_command_buffer(
         for (layer_idx, layer) in operation_layers.iter().enumerate() {
             for &op_id in layer {
                 let instruction = compute_manager.tensor_graph.get_instruction_or_panic(op_id);
+                let target = ComputeTarget::Gpu(gpu.clone());
 
-                instruction.record_into_command_buffer(gpu, command_buffer, compute_manager)?;
+                let vk_op = match instruction.select_operation(&target, compute_manager)? {
+                    Some(Dispatch::Gpu(op)) => op,
+                    _ => {
+                        return Err(VKMLError::Instruction(format!(
+                            "Cannot record instruction {:?} into GPU command buffer on {}",
+                            instruction,
+                            gpu.device_name(),
+                        )));
+                    }
+                };
+                gpu.record_vk_operation(command_buffer, &vk_op, compute_manager);
             }
 
             pending_writes.extend(layer_writes[layer_idx].iter().copied());

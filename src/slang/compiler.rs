@@ -1,4 +1,4 @@
-use crate::instruction::Shader;
+use crate::slang::Shader;
 use crate::slang::wrapper::{
     Blob, CompilerOptions, ComponentType, GlobalSession, Session, TargetDesc,
 };
@@ -7,23 +7,24 @@ use crate::utils::error::VKMLError;
 use onnx_extractor::DataType;
 use shader_slang_sys::{SlangCompileTarget, SlangFloatingPointMode, SlangOptimizationLevel};
 use std::collections::HashMap;
+use std::ffi::CStr;
 use std::sync::RwLock;
 
 struct SlangInner {
     session: Session,
-    module_cache: HashMap<&'static Shader, ComponentType>,
-    blob_cache: HashMap<(&'static Shader, DataType), Blob>,
+    module_cache: HashMap<&'static CStr, ComponentType>,
+    blob_cache: HashMap<(&'static CStr, DataType), Blob>,
 }
 
 impl SlangInner {
     fn compile(&mut self, shader: &'static Shader, dtype: DataType) -> Result<Blob, VKMLError> {
-        let key = (shader, dtype);
+        let key = (shader.path, dtype);
 
         if let Some(blob) = self.blob_cache.get(&key) {
             return Ok(blob.clone());
         }
 
-        let program = match self.module_cache.get(&shader) {
+        let program = match self.module_cache.get(shader.path) {
             Some(program) => program.clone(),
             None => {
                 let module = self
@@ -41,7 +42,7 @@ impl SlangInner {
                     .session
                     .create_composite_component_type(&[&module, &entry_point])?;
 
-                self.module_cache.insert(shader, program.clone());
+                self.module_cache.insert(shader.path, program.clone());
                 program
             }
         };
@@ -100,7 +101,7 @@ impl SlangCompiler {
     /// Compiles a Shader and DataType to SPIR-V blob.
     /// Thread-safe, checks read lock before upgrading to write lock on cache miss.
     pub fn compile(&self, shader: &'static Shader, dtype: DataType) -> Result<Blob, VKMLError> {
-        let key = (shader, dtype);
+        let key = (shader.path, dtype);
 
         // 1. Fast read lock check
         {

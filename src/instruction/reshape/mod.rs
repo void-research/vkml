@@ -1,11 +1,12 @@
 use crate::VKMLError;
 use crate::utils::math::product;
 use crate::{
-    ComputeManager, gpu::Gpu, instruction::Instruction, tensor::ComputeTarget,
+    ComputeManager,
+    instruction::{Dispatch, Instruction, VkOperation},
+    tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use vulkanalia::{vk, vk::DeviceV1_0};
 
 pub struct ReshapeInstruction {
     pub src: TensorId,
@@ -45,40 +46,18 @@ impl Instruction for ReshapeInstruction {
         }
     }
 
-    fn can_run_on(&self, _target: &ComputeTarget, _cm: &ComputeManager) -> Result<bool, VKMLError> {
-        Ok(true)
-    }
-
-    fn record_into_command_buffer(
+    fn select_operation(
         &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
-        // Reshape in Vulkan is a logical operation, not a physical one
-        // We essentially need to copy data between the tensors
-        let src_tensor = cm.tensor_read(self.src);
-        let src_mem = src_tensor.get_gpu_memory_or_panic();
-        let dst_tensor = cm.tensor_read(self.dst);
-        let dst_mem = dst_tensor.get_gpu_memory_or_panic();
-
-        unsafe {
-            // Copy regions - entire buffer
-            let copy_region = vk::BufferCopy {
-                src_offset: 0,
-                dst_offset: 0,
-                size: src_mem.size,
-            };
-
-            gpu.get_device().cmd_copy_buffer(
-                command_buffer,
-                src_mem.buffer,
-                dst_mem.buffer,
-                &[copy_region],
-            );
+        target: &ComputeTarget,
+        _cm: &ComputeManager,
+    ) -> Result<Option<Dispatch>, VKMLError> {
+        match target {
+            ComputeTarget::Cpu => Ok(Some(Dispatch::Cpu)),
+            ComputeTarget::Gpu(_) => Ok(Some(Dispatch::Gpu(VkOperation::Copy {
+                src: self.src,
+                dst: self.dst,
+            }))),
         }
-
-        Ok(())
     }
 
     fn execute_cpu(&self, cm: &ComputeManager) {

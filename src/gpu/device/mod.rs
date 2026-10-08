@@ -13,7 +13,6 @@ use vulkanalia::{
 use crate::{
     compute::memory_tracker::MemoryTracker,
     gpu::{VkExtensions, device::allocator::StagingResources},
-    instruction::Shader,
     slang::SlangCompiler,
     utils::error::VKMLError,
 };
@@ -49,7 +48,7 @@ pub struct Gpu {
     staging_resources: OnceLock<Mutex<StagingResources>>,
 
     // Drop order matters: fields drop top-to-bottom
-    pipelines_slang: RwLock<HashMap<(&'static Shader, DataType, [u32; 3]), vk::Pipeline>>,
+    pipelines_slang: RwLock<HashMap<(&'static CStr, DataType, [u32; 3]), vk::Pipeline>>,
     descriptor_set_layouts: Box<[OnceLock<vk::DescriptorSetLayout>]>,
     pipeline_layouts: Box<[OnceLock<vk::PipelineLayout>]>,
     command_pool: vk::CommandPool,
@@ -326,6 +325,35 @@ impl Gpu {
 
     pub fn extensions(&self) -> &VkExtensions {
         &self.extensions
+    }
+
+    pub fn supports_dtype(&self, dtype: DataType) -> bool {
+        match dtype {
+            DataType::Float => true,
+            DataType::Float16 => self.extensions.supports_fp16(),
+            DataType::Bfloat16 => self.extensions.supports_bf16(),
+            DataType::Int32 | DataType::Uint32 => true,
+            DataType::Int64 | DataType::Uint64 => true,
+            DataType::Int16 | DataType::Uint16 => true,
+            DataType::Bool => true,
+            DataType::Int8
+            | DataType::Uint8
+            | DataType::Int4
+            | DataType::Uint4
+            | DataType::Int2
+            | DataType::Uint2
+            | DataType::Double
+            | DataType::Complex64
+            | DataType::Complex128
+            | DataType::Float8e4m3fn
+            | DataType::Float8e4m3fnuz
+            | DataType::Float8e5m2
+            | DataType::Float8e5m2fnuz
+            | DataType::Float8e8m0
+            | DataType::Float4e2m1
+            | DataType::String
+            | DataType::Undefined => false,
+        }
     }
 
     /// for reusable command buffers, pass `vk::CommandBufferUsageFlags::empty()`

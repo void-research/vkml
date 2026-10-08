@@ -5,10 +5,8 @@ use std::thread;
 use zero_pool::global_pool;
 
 use crate::compute::compute_manager::ComputeManager;
-use crate::scheduler::execution_plan::ChunkId;
+use crate::scheduler::execution_plan::{ChunkId, ExecutionChunk, ExecutionPlan, Executor};
 use crate::utils::error::VKMLError;
-
-use super::execution_plan::{ExecutionChunk, ExecutionPlan, Executor};
 
 struct ExecutionState<'a> {
     plan: &'a ExecutionPlan,

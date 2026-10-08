@@ -43,7 +43,7 @@ pub struct CoopMatrixNV2Capabilities {
     pub flexible_dimensions: Vec<CoopMatrixFlexibleDimensions>,
 }
 
-pub(super) fn query_cooperative_matrix_nv2_limits(
+pub fn query_cooperative_matrix_nv2_limits(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
 ) -> Option<CoopMatrixNV2Capabilities> {

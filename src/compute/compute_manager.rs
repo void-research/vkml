@@ -1,7 +1,9 @@
 use std::ptr::NonNull;
 use std::{mem, ptr};
 
-use super::print_tensorgraph_stats;
+use crate::compute::cpu_compute::CPUCompute;
+use crate::compute::optimisations::Optimisations;
+use crate::compute::print_tensorgraph_stats;
 use crate::gpu::pool::GpuPool;
 use crate::instruction::{Instruction, TransferToDeviceInstruction};
 use crate::onnx_parser::parse_onnx_model;
@@ -13,9 +15,6 @@ use crate::utils::error::VKMLError;
 use crate::weight_initialiser::Initialiser;
 use onnx_extractor::Model;
 use zero_pool::global_pool;
-
-use super::cpu_compute::CPUCompute;
-use super::optimisations::Optimisations;
 
 pub struct ComputeManager {
     pub tensors: Vec<TensorCell>,
@@ -174,7 +173,7 @@ impl ComputeManager {
 
             let mut dev_idx_opt = None;
             for (idx, (cand_device, available)) in available_memory.iter().enumerate() {
-                if !instruction.can_run_on(cand_device, self)? {
+                if instruction.select_operation(cand_device, self)?.is_none() {
                     continue;
                 }
 

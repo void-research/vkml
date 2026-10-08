@@ -5,17 +5,14 @@ use crate::VKMLError;
 use crate::instruction::gemm::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu;
 use crate::instruction::gemm::push_constants::GemmPushConstants;
 use crate::utils::broadcast_strides;
-use crate::utils::bytes::as_bytes;
 use crate::{
     ComputeManager,
-    gpu::Gpu,
-    instruction::{Instruction, Shader, slang},
+    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, slang},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use vulkanalia::vk;
 
 pub static GEMM_SHADER: Shader = slang!("gemm.slang", 4);
 pub static GEMM_TILED_SHADER: Shader = slang!("gemm_tiled.slang", 4);
@@ -32,46 +29,6 @@ pub struct GemmInstruction {
     pub beta: f32,
     pub trans_a: bool,
     pub trans_b: bool,
-}
-
-impl GemmInstruction {
-    pub fn select_shader(&self, gpu: &Gpu, cm: &ComputeManager) -> Option<&'static Shader> {
-        let a_desc = cm.tensor_desc(self.a);
-        let b_desc = cm.tensor_desc(self.b);
-        let y_desc = cm.tensor_desc(self.y);
-        let c_desc = self.c.map(|c| cm.tensor_desc(c));
-
-        let y_dtype = y_desc.data_type();
-        if a_desc.data_type() != y_dtype || b_desc.data_type() != y_dtype {
-            return None;
-        }
-        if let Some(c) = c_desc
-            && c.data_type() != y_dtype
-        {
-            return None;
-        }
-
-        let (m, _, n) = compute_gemm_dimensions(
-            a_desc.dims(),
-            b_desc.dims(),
-            y_desc.dims(),
-            self.trans_a,
-            self.trans_b,
-        )
-        .ok()?;
-
-        let shader = if gpu.max_shared_memory_size() >= 512 && (m as u64) >= 8 && (n as u64) >= 8 {
-            &GEMM_TILED_SHADER
-        } else {
-            &GEMM_SHADER
-        };
-
-        if shader.can_run_on(gpu, y_dtype) {
-            Some(shader)
-        } else {
-            None
-        }
-    }
 }
 
 impl Debug for GemmInstruction {
@@ -111,12 +68,17 @@ impl Instruction for GemmInstruction {
         }
     }
 
-    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+    fn select_operation(
+        &self,
+        target: &ComputeTarget,
+        cm: &ComputeManager,
+    ) -> Result<Option<Dispatch>, VKMLError> {
         let a_desc = cm.tensor_desc(self.a);
         let b_desc = cm.tensor_desc(self.b);
         let y_desc = cm.tensor_desc(self.y);
+        let c_desc = self.c.map(|c| cm.tensor_desc(c));
 
-        compute_gemm_dimensions(
+        let (m, k, n) = compute_gemm_dimensions(
             a_desc.dims(),
             b_desc.dims(),
             y_desc.dims(),
@@ -125,113 +87,93 @@ impl Instruction for GemmInstruction {
         )?;
 
         match target {
-            ComputeTarget::Gpu(gpu) => Ok(self.select_shader(gpu, cm).is_some()),
             ComputeTarget::Cpu => {
-                let c_ok = match self.c {
-                    Some(c) => cm.tensor_desc(c).data_type() == DataType::Float,
+                let c_ok = match c_desc {
+                    Some(c) => c.data_type() == DataType::Float,
                     None => true,
                 };
                 let compatible = a_desc.data_type() == DataType::Float
                     && b_desc.data_type() == DataType::Float
                     && y_desc.data_type() == DataType::Float
                     && c_ok;
-                Ok(compatible)
+                if compatible {
+                    Ok(Some(Dispatch::Cpu))
+                } else {
+                    Ok(None)
+                }
+            }
+            ComputeTarget::Gpu(gpu) => {
+                let y_dtype = y_desc.data_type();
+                if a_desc.data_type() != y_dtype || b_desc.data_type() != y_dtype {
+                    return Ok(None);
+                }
+                if let Some(c) = c_desc
+                    && c.data_type() != y_dtype
+                {
+                    return Ok(None);
+                }
+
+                let use_tiled =
+                    gpu.max_shared_memory_size() >= 512 && (m as u64) >= 8 && (n as u64) >= 8;
+                let (shader, local_size) = if use_tiled {
+                    let bytes_per_thread = 2 * y_dtype.size_in_bytes().unwrap_or(4);
+                    let tile_dim =
+                        gpu.optimal_tiled_matrix_size(m as u32, n as u32, bytes_per_thread);
+                    (&GEMM_TILED_SHADER, [tile_dim, tile_dim, 1])
+                } else {
+                    (&GEMM_SHADER, gpu.workgroup_size_2d())
+                };
+
+                if !gpu.supports_dtype(y_dtype) || !shader.supported_types.contains(&y_dtype) {
+                    return Ok(None);
+                }
+
+                let a_strides = a_desc.strides();
+                let b_strides = b_desc.strides();
+                let y_strides = y_desc.strides();
+
+                let c_strides = c_desc
+                    .as_ref()
+                    .map(|c| {
+                        let bs = broadcast_strides(c.dims(), y_desc.dims());
+                        match bs.as_slice() {
+                            [s0, s1] => (*s0 as u32, *s1 as u32),
+                            [s1] => (0u32, *s1 as u32),
+                            _ => (0u32, 0u32),
+                        }
+                    })
+                    .unwrap_or((0, 0));
+
+                let has_c = self.c.is_some();
+                let pc = GemmPushConstants {
+                    m: m as u32,
+                    k: k as u32,
+                    n: n as u32,
+                    stride_a0: a_strides[0] as u32,
+                    stride_a1: a_strides[1] as u32,
+                    stride_b0: b_strides[0] as u32,
+                    stride_b1: b_strides[1] as u32,
+                    stride_y0: y_strides[0] as u32,
+                    stride_y1: y_strides[1] as u32,
+                    stride_c0: c_strides.0,
+                    stride_c1: c_strides.1,
+                    trans_a: if self.trans_a { 1u32 } else { 0u32 },
+                    trans_b: if self.trans_b { 1u32 } else { 0u32 },
+                    alpha: self.alpha.to_bits(),
+                    beta: self.beta.to_bits(),
+                    has_c: if has_c { 1u32 } else { 0u32 },
+                };
+
+                Ok(Some(Dispatch::Gpu(VkOperation::Compute {
+                    shader,
+                    dtype: y_dtype,
+                    local_size,
+                    work_size: [n as u32, m as u32, 1],
+                    push_constants: PushConstants::from_struct(&pc),
+                    storage_buffers: vec![Some(self.a), Some(self.b), self.c, Some(self.y)],
+                })))
             }
         }
-    }
-
-    fn record_into_command_buffer(
-        &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
-        let shader = self.select_shader(gpu, cm).ok_or_else(|| {
-            VKMLError::Instruction(format!(
-                "GPU Gemm has no compatible shader for instruction {:?}",
-                self
-            ))
-        })?;
-
-        let a_tensor = cm.tensor_read(self.a);
-        let b_tensor = cm.tensor_read(self.b);
-        let y_tensor = cm.tensor_read(self.y);
-        let c_tensor = self.c.map(|c| cm.tensor_read(c));
-
-        let a_gpu_mem = a_tensor.get_gpu_memory_or_panic();
-        let b_gpu_mem = b_tensor.get_gpu_memory_or_panic();
-        let y_gpu_mem = y_tensor.get_gpu_memory_or_panic();
-
-        let a_dims = a_tensor.desc().dims();
-        let b_dims = b_tensor.desc().dims();
-        let y_dims = y_tensor.desc().dims();
-
-        // Determine matrix dimensions based on transpose flags
-        // A is (M, K) or (K, M) if transposed
-        // B is (K, N) or (N, K) if transposed
-        // Y is (M, N)
-        let (m, k, n) =
-            compute_gemm_dimensions(a_dims, b_dims, y_dims, self.trans_a, self.trans_b)?;
-
-        let a_strides = a_tensor.desc().strides();
-        let b_strides = b_tensor.desc().strides();
-        let y_strides = y_tensor.desc().strides();
-
-        let c_strides = c_tensor
-            .as_ref()
-            .map(|t| {
-                let bs = broadcast_strides(t.desc().dims(), y_dims);
-                match bs.as_slice() {
-                    [s0, s1] => (*s0 as u32, *s1 as u32),
-                    [s1] => (0u32, *s1 as u32),
-                    _ => (0u32, 0u32),
-                }
-            })
-            .unwrap_or((0, 0));
-
-        // Build push constants
-        let has_c = c_tensor.is_some();
-        let pc = GemmPushConstants {
-            m: m as u32,
-            k: k as u32,
-            n: n as u32,
-            stride_a0: a_strides[0] as u32,
-            stride_a1: a_strides[1] as u32,
-            stride_b0: b_strides[0] as u32,
-            stride_b1: b_strides[1] as u32,
-            stride_y0: y_strides[0] as u32,
-            stride_y1: y_strides[1] as u32,
-            stride_c0: c_strides.0,
-            stride_c1: c_strides.1,
-            trans_a: if self.trans_a { 1u32 } else { 0u32 },
-            trans_b: if self.trans_b { 1u32 } else { 0u32 },
-            alpha: self.alpha.to_bits(),
-            beta: self.beta.to_bits(),
-            has_c: if has_c { 1u32 } else { 0u32 },
-        };
-
-        // Prepare storage buffers with optional C
-        let c_gpu_mem = c_tensor.as_ref().map(|t| t.get_gpu_memory_or_panic());
-
-        let y_dtype = y_tensor.desc().data_type();
-
-        let local_size = if shader == &GEMM_TILED_SHADER {
-            let bytes_per_thread = 2 * y_dtype.size_in_bytes().unwrap_or(4);
-            let tile_dim = gpu.optimal_tiled_matrix_size(m as u32, n as u32, bytes_per_thread);
-            [tile_dim, tile_dim, 1]
-        } else {
-            gpu.workgroup_size_2d()
-        };
-
-        gpu.bind_slang_compute_pipeline(command_buffer, shader, y_dtype, local_size);
-        gpu.bind_storage_buffers_optional(
-            command_buffer,
-            &[Some(a_gpu_mem), Some(b_gpu_mem), c_gpu_mem, Some(y_gpu_mem)],
-        );
-        gpu.bind_push_constants(command_buffer, shader, as_bytes(&pc));
-        gpu.dispatch(command_buffer, local_size, [n as u32, m as u32, 1]);
-
-        Ok(())
     }
 
     fn execute_cpu(&self, cm: &ComputeManager) {

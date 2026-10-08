@@ -1,5 +1,8 @@
 use crate::{
-    ComputeManager, instruction::Instruction, tensor::ComputeTarget, tensor_graph::TensorId,
+    ComputeManager,
+    instruction::{Dispatch, Instruction},
+    tensor::ComputeTarget,
+    tensor_graph::TensorId,
     utils::error::VKMLError,
 };
 use std::fmt::{Debug, Formatter, Result as FmtResult};
@@ -22,8 +25,15 @@ impl Debug for TransferToDeviceInstruction {
 }
 
 impl Instruction for TransferToDeviceInstruction {
-    fn can_run_on(&self, target: &ComputeTarget, _cm: &ComputeManager) -> Result<bool, VKMLError> {
-        Ok(matches!(target, ComputeTarget::Cpu))
+    fn select_operation(
+        &self,
+        target: &ComputeTarget,
+        _cm: &ComputeManager,
+    ) -> Result<Option<Dispatch>, VKMLError> {
+        match target {
+            ComputeTarget::Cpu => Ok(Some(Dispatch::Cpu)),
+            ComputeTarget::Gpu(_) => Ok(None),
+        }
     }
 
     fn get_input_tensor_ids(&self) -> Vec<TensorId> {

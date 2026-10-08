@@ -1,4 +1,4 @@
-use super::memory_tracker::MemoryTracker;
+use crate::compute::memory_tracker::MemoryTracker;
 
 pub struct CPUCompute {
     pub memory_tracking: MemoryTracker,

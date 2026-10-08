@@ -3,8 +3,9 @@ use std::{ffi::c_void, ptr};
 use vulkanalia::vk::{self, DeviceV1_0, DeviceV1_4, Handle};
 
 use crate::{
+    ComputeManager,
     gpu::{Gpu, memory::GpuMemory},
-    instruction::Shader,
+    instruction::{Shader, VkOperation},
     utils::error::VKMLError,
 };
 
@@ -98,7 +99,7 @@ impl Gpu {
         dtype: DataType,
         local_size: [u32; 3],
     ) -> vk::Pipeline {
-        let key = (shader, dtype, local_size);
+        let key = (shader.path, dtype, local_size);
 
         if let Some(&pipeline) = self.pipelines_slang.read().unwrap().get(&key) {
             return pipeline;
@@ -309,6 +310,63 @@ impl Gpu {
                 0,
                 data,
             );
+        }
+    }
+
+    pub fn record_vk_operation(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        op: &VkOperation,
+        cm: &ComputeManager,
+    ) {
+        match op {
+            VkOperation::Compute {
+                shader,
+                dtype,
+                local_size,
+                work_size,
+                push_constants,
+                storage_buffers,
+            } => {
+                self.bind_slang_compute_pipeline(command_buffer, shader, *dtype, *local_size);
+
+                let tensors: Vec<Option<_>> = storage_buffers
+                    .iter()
+                    .map(|id_opt| id_opt.map(|id| cm.tensor_read(id)))
+                    .collect();
+                let memories: Vec<Option<&GpuMemory>> = tensors
+                    .iter()
+                    .map(|t_opt| t_opt.as_ref().map(|t| t.get_gpu_memory_or_panic()))
+                    .collect();
+                self.bind_storage_buffers_optional(command_buffer, &memories);
+
+                if !push_constants.is_empty() {
+                    self.bind_push_constants(command_buffer, shader, push_constants.as_bytes());
+                }
+
+                self.dispatch(command_buffer, *local_size, *work_size);
+            }
+            VkOperation::Copy { src, dst } => {
+                let src_tensor = cm.tensor_read(*src);
+                let src_mem = src_tensor.get_gpu_memory_or_panic();
+                let dst_tensor = cm.tensor_read(*dst);
+                let dst_mem = dst_tensor.get_gpu_memory_or_panic();
+
+                unsafe {
+                    let copy_region = vk::BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: src_mem.size,
+                    };
+
+                    self.get_device().cmd_copy_buffer(
+                        command_buffer,
+                        src_mem.buffer,
+                        dst_mem.buffer,
+                        &[copy_region],
+                    );
+                }
+            }
         }
     }
 }

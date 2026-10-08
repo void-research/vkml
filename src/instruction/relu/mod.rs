@@ -2,14 +2,15 @@ mod f32_f32_cpu;
 
 use crate::ComputeManager;
 use crate::VKMLError;
-use crate::gpu::Gpu;
-use crate::instruction::{Instruction, Shader, relu::f32_f32_cpu::f32_f32_cpu, slang};
+use crate::instruction::{
+    Dispatch, Instruction, PushConstants, Shader, VkOperation, relu::f32_f32_cpu::f32_f32_cpu,
+    slang,
+};
 use crate::tensor::ComputeTarget;
 use crate::tensor_graph::TensorId;
 use crate::utils::math::{broadcast_shape, broadcast_strides};
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use vulkanalia::vk;
 
 pub static SHADER: Shader = slang!("relu.slang", 2);
 
@@ -43,52 +44,44 @@ impl Instruction for ReLUInstruction {
         }
     }
 
-    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+    fn select_operation(
+        &self,
+        target: &ComputeTarget,
+        cm: &ComputeManager,
+    ) -> Result<Option<Dispatch>, VKMLError> {
         let src_desc = cm.tensor_desc(self.src);
         let dst_desc = cm.tensor_desc(self.dst);
         let dst_dtype = dst_desc.data_type();
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible =
-                    src_desc.data_type() == dst_dtype && SHADER.can_run_on(gpu, dst_dtype);
-                Ok(compatible)
+                if src_desc.data_type() != dst_dtype
+                    || !gpu.supports_dtype(dst_dtype)
+                    || !SHADER.supported_types.contains(&dst_dtype)
+                {
+                    return Ok(None);
+                }
+
+                let num_elements = dst_desc.num_elements() as u32;
+                let local_size = gpu.workgroup_size_1d();
+
+                Ok(Some(Dispatch::Gpu(VkOperation::Compute {
+                    shader: &SHADER,
+                    dtype: dst_dtype,
+                    local_size,
+                    work_size: [num_elements, 1, 1],
+                    push_constants: PushConstants::from_struct(&num_elements),
+                    storage_buffers: vec![Some(self.src), Some(self.dst)],
+                })))
             }
             ComputeTarget::Cpu => {
-                let compatible =
-                    src_desc.data_type() == DataType::Float && dst_dtype == DataType::Float;
-                Ok(compatible)
+                if src_desc.data_type() == DataType::Float && dst_dtype == DataType::Float {
+                    Ok(Some(Dispatch::Cpu))
+                } else {
+                    Ok(None)
+                }
             }
         }
-    }
-
-    fn record_into_command_buffer(
-        &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
-        let src_tensor = cm.tensor_read(self.src);
-        let src_mem = src_tensor.get_gpu_memory_or_panic();
-        let dst_tensor = cm.tensor_read(self.dst);
-        let dst_mem = dst_tensor.get_gpu_memory_or_panic();
-
-        let num_elements = dst_tensor.desc().num_elements();
-
-        let dst_dtype = dst_tensor.desc().data_type();
-
-        let local_size = gpu.workgroup_size_1d();
-
-        gpu.bind_slang_compute_pipeline(command_buffer, &SHADER, dst_dtype, local_size);
-
-        gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-
-        let pc_data = (num_elements as u32).to_ne_bytes();
-        gpu.bind_push_constants(command_buffer, &SHADER, &pc_data);
-
-        gpu.dispatch(command_buffer, local_size, [num_elements as u32, 1, 1]);
-
-        Ok(())
     }
 
     fn execute_cpu(&self, cm: &ComputeManager) {

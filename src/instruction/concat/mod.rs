@@ -2,7 +2,7 @@ mod f32_cpu;
 
 use crate::{
     ComputeManager,
-    instruction::{Instruction, concat::f32_cpu::f32_cpu},
+    instruction::{Dispatch, Instruction, concat::f32_cpu::f32_cpu},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
     utils::error::VKMLError,
@@ -45,31 +45,35 @@ impl Instruction for ConcatInstruction {
         }
     }
 
-    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+    fn select_operation(
+        &self,
+        target: &ComputeTarget,
+        cm: &ComputeManager,
+    ) -> Result<Option<Dispatch>, VKMLError> {
         if self.sources.is_empty() {
             return Err(VKMLError::Instruction("Concat has no sources".into()));
         }
 
         match target {
-            ComputeTarget::Gpu(_) => Ok(false),
+            ComputeTarget::Gpu(_) => Ok(None),
             ComputeTarget::Cpu => {
                 if self.dim != 1 {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 let first_desc = cm.tensor_desc(self.sources[0]);
                 if first_desc.dims().len() != 2 || first_desc.data_type() != DataType::Float {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 if cm.tensor_desc(self.dst).data_type() != DataType::Float {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 for &src_id in &self.sources {
                     let desc = cm.tensor_desc(src_id);
                     if desc.data_type() != DataType::Float || desc.dims().len() != 2 {
-                        return Ok(false);
+                        return Ok(None);
                     }
                 }
-                Ok(true)
+                Ok(Some(Dispatch::Cpu))
             }
         }
     }

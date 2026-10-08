@@ -5,17 +5,14 @@ use crate::ComputeManager;
 use crate::VKMLError;
 use crate::instruction::expand::f32_f32_cpu::f32_f32_cpu;
 use crate::instruction::expand::push_constants::ExpandPushConstants;
-use crate::utils::as_bytes;
 use crate::utils::math::broadcast_strides;
 use crate::{
-    gpu::Gpu,
-    instruction::{Instruction, Shader, slang},
+    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, slang},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use vulkanalia::vk;
 
 pub static SHADER: Shader = slang!("expand.slang", 2);
 
@@ -54,88 +51,78 @@ impl Instruction for ExpandInstruction {
         }
     }
 
-    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+    fn select_operation(
+        &self,
+        target: &ComputeTarget,
+        cm: &ComputeManager,
+    ) -> Result<Option<Dispatch>, VKMLError> {
         let src_desc = cm.tensor_desc(self.src);
         let dst_desc = cm.tensor_desc(self.dst);
+        let dst_dims = dst_desc.dims();
         let dst_dtype = dst_desc.data_type();
 
-        if dst_desc.dims().len() > 8 {
+        if dst_dims.len() > 8 {
             return Err(VKMLError::Instruction(format!(
                 "Expand instruction {:?}: tensor rank exceeds max supported 8 (got {})",
                 self,
-                dst_desc.dims().len()
+                dst_dims.len()
             )));
         }
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible =
-                    src_desc.data_type() == dst_dtype && SHADER.can_run_on(gpu, dst_dtype);
-                Ok(compatible)
+                if src_desc.data_type() != dst_dtype
+                    || !gpu.supports_dtype(dst_dtype)
+                    || !SHADER.supported_types.contains(&dst_dtype)
+                {
+                    return Ok(None);
+                }
+
+                let rank = dst_dims.len() as u32;
+
+                let mut dims_arr = [0u32; 8];
+                for (i, &d) in dst_dims.iter().enumerate().take(8) {
+                    dims_arr[i] = d as u32;
+                }
+
+                let strides_src_usize = broadcast_strides(src_desc.dims(), dst_dims);
+
+                let mut strides_src_arr = [0u32; 8];
+                for (i, &s) in strides_src_usize.iter().enumerate().take(8) {
+                    strides_src_arr[i] = s as u32;
+                }
+
+                let num_elements = dst_desc.num_elements() as u32;
+
+                let push_const_values = ExpandPushConstants {
+                    rank,
+                    pad: 0,
+                    total: num_elements,
+                    dims: dims_arr,
+                    strides_src: strides_src_arr,
+                };
+
+                let local_size = gpu.workgroup_size_1d();
+
+                Ok(Some(Dispatch::Gpu(VkOperation::Compute {
+                    shader: &SHADER,
+                    dtype: dst_dtype,
+                    local_size,
+                    work_size: [num_elements, 1, 1],
+                    push_constants: PushConstants::from_struct(&push_const_values),
+                    storage_buffers: vec![Some(self.src), Some(self.dst)],
+                })))
             }
             ComputeTarget::Cpu => {
                 let compatible =
                     src_desc.data_type() == DataType::Float && dst_dtype == DataType::Float;
-                Ok(compatible)
+                if compatible {
+                    Ok(Some(Dispatch::Cpu))
+                } else {
+                    Ok(None)
+                }
             }
         }
-    }
-
-    fn record_into_command_buffer(
-        &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
-        let shader = &SHADER;
-
-        let src_tensor = cm.tensor_read(self.src);
-        let src_mem = src_tensor.get_gpu_memory_or_panic();
-        let dst_tensor = cm.tensor_read(self.dst);
-        let dst_mem = dst_tensor.get_gpu_memory_or_panic();
-
-        let src_desc = src_tensor.desc();
-        let dst_desc = dst_tensor.desc();
-
-        let src_dims_usize = src_desc.dims();
-        let dst_dims_usize = dst_desc.dims();
-
-        let rank = dst_dims_usize.len() as u32;
-
-        let mut dims_arr = [0u32; 8];
-        for (i, &d) in dst_dims_usize.iter().enumerate().take(8) {
-            dims_arr[i] = d as u32;
-        }
-
-        let strides_src_usize = broadcast_strides(src_dims_usize, dst_dims_usize);
-
-        let mut strides_src_arr = [0u32; 8];
-        for (i, &s) in strides_src_usize.iter().enumerate().take(8) {
-            strides_src_arr[i] = s as u32;
-        }
-
-        let num_elements = dst_desc.num_elements() as u32;
-
-        let push_const_values = ExpandPushConstants {
-            rank,
-            pad: 0,
-            total: num_elements,
-            dims: dims_arr,
-            strides_src: strides_src_arr,
-        };
-
-        let push_constant_bytes = as_bytes(&push_const_values);
-        let dst_dtype = dst_desc.data_type();
-
-        let local_size = gpu.workgroup_size_1d();
-
-        gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
-        gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-        gpu.bind_push_constants(command_buffer, shader, push_constant_bytes);
-
-        gpu.dispatch(command_buffer, local_size, [num_elements, 1, 1]);
-
-        Ok(())
     }
 
     fn execute_cpu(&self, cm: &ComputeManager) {

@@ -4,7 +4,7 @@ use vulkanalia::{vk, vk::DeviceV1_0};
 
 use crate::VKMLError;
 
-use super::device::Gpu;
+use crate::gpu::device::Gpu;
 
 pub struct GpuMemory {
     pub buffer: vk::Buffer,

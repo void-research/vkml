@@ -2,11 +2,9 @@ mod f32_cpu;
 pub mod push_constants;
 
 use crate::VKMLError;
-use crate::gpu::Gpu;
 use crate::instruction::reducemean::f32_cpu::f32_cpu;
 use crate::instruction::reducemean::push_constants::ReduceMeanPushConstants;
-use crate::instruction::{Instruction, Shader, slang};
-use crate::utils::as_bytes;
+use crate::instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, slang};
 use crate::{
     ComputeManager,
     tensor::{ComputeTarget, TensorDesc},
@@ -14,7 +12,6 @@ use crate::{
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use vulkanalia::vk;
 
 pub static SHADER: Shader = slang!("reducemean.slang", 2);
 
@@ -54,79 +51,73 @@ impl Instruction for ReduceMeanInstruction {
         }
     }
 
-    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+    fn select_operation(
+        &self,
+        target: &ComputeTarget,
+        cm: &ComputeManager,
+    ) -> Result<Option<Dispatch>, VKMLError> {
         let src_desc = cm.tensor_desc(self.src);
         let dst_desc = cm.tensor_desc(self.dst);
         let dst_dtype = dst_desc.data_type();
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible =
-                    src_desc.data_type() == dst_dtype && SHADER.can_run_on(gpu, dst_dtype);
-                Ok(compatible)
+                if src_desc.data_type() != dst_dtype
+                    || !gpu.supports_dtype(dst_dtype)
+                    || !SHADER.supported_types.contains(&dst_dtype)
+                {
+                    return Ok(None);
+                }
+
+                let rank = src_desc.ndim() as i64;
+                let axes_vec: Vec<i64> = if let Some(a) = &self.axes {
+                    a.clone()
+                } else if self.noop_with_empty_axes != 0 {
+                    Vec::new()
+                } else {
+                    (0..rank).collect()
+                };
+
+                if axes_vec.is_empty() && self.noop_with_empty_axes != 0 {
+                    return Ok(Some(Dispatch::Gpu(VkOperation::Copy {
+                        src: self.src,
+                        dst: self.dst,
+                    })));
+                }
+
+                let mut reduction_size: u64 = 1;
+                for &a in &axes_vec {
+                    reduction_size *= src_desc.dims()[a as usize] as u64;
+                }
+
+                let out_elements = dst_desc.num_elements() as u32;
+
+                let mean_pc = ReduceMeanPushConstants {
+                    total: out_elements,
+                    reduction_size: reduction_size as u32,
+                };
+
+                let local_size = gpu.workgroup_size_1d();
+
+                Ok(Some(Dispatch::Gpu(VkOperation::Compute {
+                    shader: &SHADER,
+                    dtype: dst_dtype,
+                    local_size,
+                    work_size: [out_elements, 1, 1],
+                    push_constants: PushConstants::from_struct(&mean_pc),
+                    storage_buffers: vec![Some(self.src), Some(self.dst)],
+                })))
             }
             ComputeTarget::Cpu => {
                 let compatible =
                     src_desc.data_type() == DataType::Float && dst_dtype == DataType::Float;
-                Ok(compatible)
+                if compatible {
+                    Ok(Some(Dispatch::Cpu))
+                } else {
+                    Ok(None)
+                }
             }
         }
-    }
-
-    fn record_into_command_buffer(
-        &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
-        let shader = &SHADER;
-
-        // GPU implementation: two-pass reduction (sum then scale)
-        let src_t = cm.tensor_read(self.src);
-        let src_mem = src_t.get_gpu_memory_or_panic();
-        let dst_t = cm.tensor_read(self.dst);
-        let dst_mem = dst_t.get_gpu_memory_or_panic();
-
-        // Determine axes to reduce
-        let rank = src_t.desc().ndim() as i64;
-        let axes_vec: Vec<i64> = if let Some(a) = &self.axes {
-            a.clone()
-        } else if self.noop_with_empty_axes != 0 {
-            Vec::new()
-        } else {
-            (0..rank).collect()
-        };
-
-        // If noop and empty axes, nothing to do on GPU (copy handled elsewhere)
-        if axes_vec.is_empty() && self.noop_with_empty_axes != 0 {
-            return Ok(());
-        }
-
-        // compute reduction_size and output elements
-        let mut reduction_size: u64 = 1;
-        for &a in &axes_vec {
-            reduction_size *= src_t.desc().dims()[a as usize] as u64;
-        }
-
-        let out_elements = dst_t.desc().num_elements() as u32;
-
-        let mean_pc = ReduceMeanPushConstants {
-            total: out_elements,
-            reduction_size: reduction_size as u32,
-        };
-        let mean_pc_bytes = as_bytes(&mean_pc);
-
-        let dst_dtype = dst_t.desc().data_type();
-
-        // Choose a local size for dispatch (1D op)
-        let local_size = gpu.workgroup_size_1d();
-
-        gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
-        gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-        gpu.bind_push_constants(command_buffer, shader, mean_pc_bytes);
-        gpu.dispatch(command_buffer, local_size, [out_elements, 1, 1]);
-
-        Ok(())
     }
 
     fn execute_cpu(&self, cm: &ComputeManager) {

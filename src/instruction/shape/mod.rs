@@ -1,15 +1,12 @@
 mod push_constants;
 
 use crate::VKMLError;
-use crate::gpu::Gpu;
 use crate::instruction::shape::push_constants::ShapePushConstants;
-use crate::instruction::{Instruction, Shader, slang};
+use crate::instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, slang};
 use crate::tensor::{ComputeTarget, TensorDesc};
-use crate::utils::as_bytes;
 use crate::{ComputeManager, tensor_graph::TensorId};
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use vulkanalia::vk;
 
 pub static SHADER: Shader = slang!("shape.slang", 1, &[DataType::Int64]);
 
@@ -50,7 +47,11 @@ impl Instruction for ShapeInstruction {
         }
     }
 
-    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+    fn select_operation(
+        &self,
+        target: &ComputeTarget,
+        cm: &ComputeManager,
+    ) -> Result<Option<Dispatch>, VKMLError> {
         let dst_desc = cm.tensor_desc(self.dst);
         let dst_dtype = dst_desc.data_type();
 
@@ -63,84 +64,70 @@ impl Instruction for ShapeInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible = SHADER.can_run_on(gpu, DataType::Int64);
-                Ok(compatible)
-            }
-            ComputeTarget::Cpu => Ok(true),
-        }
-    }
-
-    fn record_into_command_buffer(
-        &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
-        let shader = &SHADER;
-
-        // Compute shape bytes on host, then upload to GPU via a host-visible staging buffer
-        let src_desc = cm.tensor_read(self.src).desc().clone();
-        let rank = src_desc.ndim() as i64;
-
-        let start = match self.start {
-            Some(s) => {
-                if s < 0 {
-                    s + rank
-                } else {
-                    s
+                if !gpu.supports_dtype(DataType::Int64)
+                    || !SHADER.supported_types.contains(&DataType::Int64)
+                {
+                    return Ok(None);
                 }
-            }
-            None => 0,
-        };
 
-        let end = match self.end {
-            Some(e) => {
-                if e < 0 {
-                    e + rank
-                } else {
-                    e
+                let src_desc = cm.tensor_desc(self.src);
+                let rank = src_desc.ndim() as i64;
+
+                let start = match self.start {
+                    Some(s) => {
+                        if s < 0 {
+                            s + rank
+                        } else {
+                            s
+                        }
+                    }
+                    None => 0,
+                };
+
+                let end = match self.end {
+                    Some(e) => {
+                        if e < 0 {
+                            e + rank
+                        } else {
+                            e
+                        }
+                    }
+                    None => rank,
+                };
+
+                let start = start.clamp(0, rank);
+                let end = end.clamp(start, rank);
+                let slice_len = end - start;
+
+                let mut dims_lo = [0u32; 8];
+                let mut dims_hi = [0u32; 8];
+                for (i, &d) in src_desc.dims().iter().enumerate().take(8) {
+                    let bytes = d.to_le_bytes();
+                    dims_lo[i] = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                    dims_hi[i] = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
                 }
+
+                let pc = ShapePushConstants {
+                    slice_len: slice_len as u32,
+                    start: start as u32,
+                    pad: 0,
+                    dims_lo,
+                    dims_hi,
+                };
+
+                let local_size = gpu.workgroup_size_1d();
+
+                Ok(Some(Dispatch::Gpu(VkOperation::Compute {
+                    shader: &SHADER,
+                    dtype: dst_dtype,
+                    local_size,
+                    work_size: [slice_len as u32, 1, 1],
+                    push_constants: PushConstants::from_struct(&pc),
+                    storage_buffers: vec![Some(self.dst)],
+                })))
             }
-            None => rank,
-        };
-
-        let start = start.clamp(0, rank);
-        let end = end.clamp(start, rank);
-        let slice_len = end - start;
-
-        let mut dims_lo = [0u32; 8];
-        let mut dims_hi = [0u32; 8];
-        for (i, &d) in src_desc.dims().iter().enumerate().take(8) {
-            let bytes = d.to_le_bytes();
-            dims_lo[i] = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            dims_hi[i] = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+            ComputeTarget::Cpu => Ok(Some(Dispatch::Cpu)),
         }
-
-        let pc = ShapePushConstants {
-            slice_len: slice_len as u32,
-            start: start as u32,
-            pad: 0,
-            dims_lo,
-            dims_hi,
-        };
-
-        // For GPU path do not perform CPU writes; read the dst tensor and ensure it's GPU-backed
-        let dst_t = cm.tensor_read(self.dst);
-        let dst_mem = dst_t.get_gpu_memory_or_panic();
-        let dst_dtype = dst_t.desc().data_type();
-
-        let local_size = gpu.workgroup_size_1d();
-
-        gpu.bind_slang_compute_pipeline(command_buffer, shader, dst_dtype, local_size);
-        gpu.bind_storage_buffers(command_buffer, &[dst_mem]);
-
-        let pc_bytes = as_bytes(&pc);
-        gpu.bind_push_constants(command_buffer, shader, pc_bytes);
-
-        // Dispatch with one work item per shape element
-        gpu.dispatch(command_buffer, local_size, [slice_len as u32, 1, 1]);
-
-        Ok(())
     }
 
     fn execute_cpu(&self, cm: &ComputeManager) {

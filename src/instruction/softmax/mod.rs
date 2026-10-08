@@ -4,17 +4,17 @@ mod push_constants;
 use crate::ComputeManager;
 use crate::VKMLError;
 use crate::instruction::softmax::push_constants::SoftmaxPushConstants;
-use crate::utils::as_bytes;
 
 use crate::{
-    gpu::Gpu,
-    instruction::{FLOAT_TYPES, Instruction, Shader, slang, softmax::f32_f32_cpu::f32_f32_cpu},
+    instruction::{
+        Dispatch, FLOAT_TYPES, Instruction, PushConstants, Shader, VkOperation, slang,
+        softmax::f32_f32_cpu::f32_f32_cpu,
+    },
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use vulkanalia::vk;
 
 pub static SHADER: Shader = slang!("softmax.slang", 2, FLOAT_TYPES);
 
@@ -64,65 +64,56 @@ impl Instruction for SoftmaxInstruction {
         }
     }
 
-    fn can_run_on(&self, target: &ComputeTarget, cm: &ComputeManager) -> Result<bool, VKMLError> {
+    fn select_operation(
+        &self,
+        target: &ComputeTarget,
+        cm: &ComputeManager,
+    ) -> Result<Option<Dispatch>, VKMLError> {
         let src_desc = cm.tensor_desc(self.src);
         let dst_desc = cm.tensor_desc(self.dst);
         let dst_dtype = dst_desc.data_type();
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                let compatible =
-                    src_desc.data_type() == dst_dtype && SHADER.can_run_on(gpu, dst_dtype);
-                Ok(compatible)
+                if src_desc.data_type() != dst_dtype
+                    || !gpu.supports_dtype(dst_dtype)
+                    || !SHADER.supported_types.contains(&dst_dtype)
+                {
+                    return Ok(None);
+                }
+
+                let dims = src_desc.dims();
+                let dim = self.resolve_axis(dims.len());
+
+                let feature_size = dims[dim] as usize;
+                let batch_size = src_desc.num_elements() / feature_size;
+
+                let push_constants = SoftmaxPushConstants {
+                    batch_size: batch_size as u32,
+                    feature_size: feature_size as u32,
+                };
+
+                let local_size = [256, 1, 1];
+
+                Ok(Some(Dispatch::Gpu(VkOperation::Compute {
+                    shader: &SHADER,
+                    dtype: dst_dtype,
+                    local_size,
+                    work_size: [(batch_size * local_size[0] as usize) as u32, 1, 1],
+                    push_constants: PushConstants::from_struct(&push_constants),
+                    storage_buffers: vec![Some(self.src), Some(self.dst)],
+                })))
             }
             ComputeTarget::Cpu => {
                 let compatible =
                     src_desc.data_type() == DataType::Float && dst_dtype == DataType::Float;
-                Ok(compatible)
+                if compatible {
+                    Ok(Some(Dispatch::Cpu))
+                } else {
+                    Ok(None)
+                }
             }
         }
-    }
-
-    fn record_into_command_buffer(
-        &self,
-        gpu: &Gpu,
-        command_buffer: vk::CommandBuffer,
-        cm: &ComputeManager,
-    ) -> Result<(), VKMLError> {
-        let src_tensor = cm.tensor_read(self.src);
-        let src_mem = src_tensor.get_gpu_memory_or_panic();
-        let dst_tensor = cm.tensor_read(self.dst);
-        let dst_mem = dst_tensor.get_gpu_memory_or_panic();
-
-        let dims = src_tensor.desc().dims();
-        let dim = self.resolve_axis(dims.len());
-
-        let feature_size = dims[dim] as usize;
-        let batch_size = src_tensor.desc().num_elements() / feature_size;
-
-        // Create push constants struct (compute before GPU ops)
-        let push_constants = SoftmaxPushConstants {
-            batch_size: batch_size as u32,
-            feature_size: feature_size as u32,
-        };
-
-        let pc_bytes = as_bytes(&push_constants);
-        let dst_dtype = dst_tensor.desc().data_type();
-
-        // Standard path
-        let local_size = [256, 1, 1];
-
-        gpu.bind_slang_compute_pipeline(command_buffer, &SHADER, dst_dtype, local_size);
-        gpu.bind_storage_buffers(command_buffer, &[src_mem, dst_mem]);
-        gpu.bind_push_constants(command_buffer, &SHADER, pc_bytes);
-
-        gpu.dispatch(
-            command_buffer,
-            local_size,
-            [(batch_size * local_size[0] as usize) as u32, 1, 1],
-        );
-
-        Ok(())
     }
 
     fn execute_cpu(&self, cm: &ComputeManager) {
