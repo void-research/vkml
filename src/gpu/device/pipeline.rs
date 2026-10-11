@@ -278,7 +278,7 @@ impl Gpu {
     pub fn record_vk_operation(
         &self,
         command_buffer: vk::CommandBuffer,
-        op: &VkOperation,
+        op: VkOperation,
         cm: &ComputeManager,
     ) {
         match op {
@@ -290,8 +290,8 @@ impl Gpu {
                 push_constants,
                 storage_buffers,
             } => {
-                self.bind_slang_compute_pipeline(command_buffer, shader, *dtype, *local_size);
-                self.bind_storage_buffers(command_buffer, storage_buffers, cm);
+                self.bind_slang_compute_pipeline(command_buffer, shader, dtype, local_size);
+                self.bind_storage_buffers(command_buffer, &storage_buffers, cm);
 
                 if !push_constants.is_empty() {
                     self.bind_push_constants(command_buffer, shader, push_constants.as_bytes());
@@ -307,9 +307,9 @@ impl Gpu {
                 }
             }
             VkOperation::Copy { src, dst } => {
-                let src_tensor = cm.tensor_read(*src);
+                let src_tensor = cm.tensor_read(src);
                 let src_mem = src_tensor.get_gpu_memory_or_panic();
-                let dst_tensor = cm.tensor_read(*dst);
+                let dst_tensor = cm.tensor_read(dst);
                 let dst_mem = dst_tensor.get_gpu_memory_or_panic();
 
                 let copy_region = vk::BufferCopy {

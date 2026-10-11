@@ -338,7 +338,7 @@ fn create_gpu_chunk_command_buffer(
                         )));
                     }
                 };
-                gpu.record_vk_operation(command_buffer, &vk_op, compute_manager);
+                gpu.record_vk_operation(command_buffer, vk_op, compute_manager);
             }
 
             pending_writes.extend(layer_writes[layer_idx].iter().copied());
