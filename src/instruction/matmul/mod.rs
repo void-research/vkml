@@ -180,19 +180,8 @@ impl Instruction for MatMulInstruction {
                             stride_c: *dst_strides.last().unwrap() as u32,
                         };
 
-                        let sg = gpu.subgroup_size().min(gpu.max_workgroup_size()[0]);
-                        let (local, work) = if (n as u32) >= sg {
-                            let dim_x = sg.min(64);
-                            let max_inv = gpu.max_workgroup_invocations().min(256);
-                            let dim_y = (max_inv / dim_x).max(1);
-                            ([dim_x, dim_y, 1], [n as u32, dim_y, 1])
-                        } else {
-                            let max_threads = gpu
-                                .max_workgroup_invocations()
-                                .min(gpu.max_workgroup_size()[1]);
-                            let reduce_threads = 1u32 << (31 - max_threads.leading_zeros());
-                            ([1, reduce_threads, 1], [n as u32, reduce_threads, 1])
-                        };
+                        let local = gpu.workgroup_size_gemv(n as u32);
+                        let work = [n as u32, local[1], 1];
                         (local, PushConstants::from_struct(&pc), work)
                     }
                     MatMulVariant::D2D1 => {
@@ -208,19 +197,8 @@ impl Instruction for MatMulInstruction {
                             stride_c: *dst_strides.last().unwrap() as u32,
                         };
 
-                        let sg = gpu.subgroup_size().min(gpu.max_workgroup_size()[0]);
-                        let (local, work) = if (m as u32) >= sg {
-                            let dim_x = sg.min(64);
-                            let max_inv = gpu.max_workgroup_invocations().min(256);
-                            let dim_y = (max_inv / dim_x).max(1);
-                            ([dim_x, dim_y, 1], [m as u32, dim_y, 1])
-                        } else {
-                            let max_threads = gpu
-                                .max_workgroup_invocations()
-                                .min(gpu.max_workgroup_size()[1]);
-                            let reduce_threads = 1u32 << (31 - max_threads.leading_zeros());
-                            ([1, reduce_threads, 1], [m as u32, reduce_threads, 1])
-                        };
+                        let local = gpu.workgroup_size_gemv(m as u32);
+                        let work = [m as u32, local[1], 1];
                         (local, PushConstants::from_struct(&pc), work)
                     }
                     MatMulVariant::D2D2 => {

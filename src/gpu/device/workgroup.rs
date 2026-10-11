@@ -1,5 +1,3 @@
-use vulkanalia::vk::{self, DeviceV1_0};
-
 use crate::gpu::Gpu;
 
 impl Gpu {
@@ -50,6 +48,28 @@ impl Gpu {
         [dim_x, dim_y, dim_z]
     }
 
+    pub fn workgroup_size_gemv(&self, output_dim: u32) -> [u32; 3] {
+        let max_inv = self.max_workgroup_invocations().clamp(1, 256);
+        let target_threads = 1 << max_inv.ilog2();
+
+        let wave_size = self
+            .subgroup_size()
+            .min(self.max_workgroup_size()[0])
+            .clamp(1, 64);
+
+        let dim_x = if output_dim >= wave_size {
+            wave_size
+        } else {
+            1
+        };
+
+        let max_y = self.max_workgroup_size()[1].max(1);
+        let raw_y = (target_threads / dim_x).min(max_y).max(1);
+        let dim_y = 1 << raw_y.ilog2();
+
+        [dim_x, dim_y, 1]
+    }
+
     pub fn optimal_tiled_matrix_size(&self, m: u32, n: u32, bytes_per_thread: usize) -> u32 {
         let max_shmem = self.max_shared_memory_size() as u64;
         let max_inv = self.max_workgroup_invocations();
@@ -72,15 +92,5 @@ impl Gpu {
         }
 
         8
-    }
-
-    pub fn dispatch(&self, cb: vk::CommandBuffer, local_size: [u32; 3], work_size: [u32; 3]) {
-        let dispatch_x = work_size[0].div_ceil(local_size[0]);
-        let dispatch_y = work_size[1].div_ceil(local_size[1]);
-        let dispatch_z = work_size[2].div_ceil(local_size[2]);
-        unsafe {
-            self.device
-                .cmd_dispatch(cb, dispatch_x, dispatch_y, dispatch_z);
-        }
     }
 }

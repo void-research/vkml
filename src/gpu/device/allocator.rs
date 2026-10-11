@@ -37,8 +37,8 @@ impl Gpu {
                 queue_family_indices: std::ptr::null(),
             };
 
-            let buffer = self.get_device().create_buffer(&buffer_info, None)?;
-            let mem_requirements = self.get_device().get_buffer_memory_requirements(buffer);
+            let buffer = self.device.create_buffer(&buffer_info, None)?;
+            let mem_requirements = self.device.get_buffer_memory_requirements(buffer);
 
             let properties = match self.host_access_mode {
                 HostAccessMode::DirectAllHostVisible => {
@@ -59,8 +59,8 @@ impl Gpu {
                 memory_type_index: memory_type,
             };
 
-            let memory = self.get_device().allocate_memory(&alloc_info, None)?;
-            self.get_device().bind_buffer_memory(buffer, memory, 0)?;
+            let memory = self.device.allocate_memory(&alloc_info, None)?;
+            self.device.bind_buffer_memory(buffer, memory, 0)?;
 
             Ok(GpuMemory::new(
                 buffer,
@@ -94,7 +94,7 @@ impl Gpu {
             .contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
         {
             unsafe {
-                let data_ptr = self.get_device().map_memory(
+                let data_ptr = self.device.map_memory(
                     dest.memory,
                     0,
                     data_size,
@@ -103,7 +103,7 @@ impl Gpu {
 
                 std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr, data.len());
 
-                self.get_device().unmap_memory(dest.memory);
+                self.device.unmap_memory(dest.memory);
             }
             Ok(())
         } else {
@@ -120,7 +120,7 @@ impl Gpu {
             let mut buffer = Box::new_uninit_slice(source.size as usize);
 
             unsafe {
-                let data_ptr = self.get_device().map_memory(
+                let data_ptr = self.device.map_memory(
                     source.memory,
                     0,
                     source.size,
@@ -130,7 +130,7 @@ impl Gpu {
                 let buffer_ptr = buffer.as_mut_ptr() as *mut u8;
                 std::ptr::copy_nonoverlapping(data_ptr, buffer_ptr, buffer.len());
 
-                self.get_device().unmap_memory(source.memory);
+                self.device.unmap_memory(source.memory);
             }
 
             Ok(unsafe { buffer.assume_init() })
@@ -168,14 +168,14 @@ impl Gpu {
                 let chunk_size = cmp::min(staging_size, remaining);
                 let chunk = &data[offset..offset + chunk_size];
 
-                let data_ptr = self.get_device().map_memory(
+                let data_ptr = self.device.map_memory(
                     staging_buffer.memory,
                     0,
                     chunk_size as vk::DeviceSize,
                     vk::MemoryMapFlags::empty(),
                 )? as *mut u8;
                 std::ptr::copy_nonoverlapping(chunk.as_ptr(), data_ptr, chunk_size);
-                self.get_device().unmap_memory(staging_buffer.memory);
+                self.device.unmap_memory(staging_buffer.memory);
 
                 self.begin_command_buffer(
                     command_buffer,
@@ -188,7 +188,7 @@ impl Gpu {
                     size: chunk_size as vk::DeviceSize,
                 };
 
-                self.get_device().cmd_copy_buffer(
+                self.device.cmd_copy_buffer(
                     command_buffer,
                     staging_buffer.buffer,
                     dest.buffer,
@@ -200,7 +200,7 @@ impl Gpu {
                 self.submit_with_fence(&[command_buffer], Some(fence))?;
                 self.wait_and_reset_fence(fence)?;
 
-                self.get_device().reset_command_buffer(
+                self.device.reset_command_buffer(
                     command_buffer,
                     vk::CommandBufferResetFlags::RELEASE_RESOURCES,
                 )?;
@@ -246,7 +246,7 @@ impl Gpu {
                     size: chunk_size as vk::DeviceSize,
                 };
 
-                self.get_device().cmd_copy_buffer(
+                self.device.cmd_copy_buffer(
                     command_buffer,
                     source.buffer,
                     staging_buffer.buffer,
@@ -258,7 +258,7 @@ impl Gpu {
                 self.submit_with_fence(&[command_buffer], Some(fence))?;
                 self.wait_and_reset_fence(fence)?;
 
-                let data_ptr = self.get_device().map_memory(
+                let data_ptr = self.device.map_memory(
                     staging_buffer.memory,
                     0,
                     chunk_size as vk::DeviceSize,
@@ -267,9 +267,9 @@ impl Gpu {
 
                 let buffer_ptr = buffer.as_mut_ptr().add(offset) as *mut u8;
                 std::ptr::copy_nonoverlapping(data_ptr, buffer_ptr, chunk_size);
-                self.get_device().unmap_memory(staging_buffer.memory);
+                self.device.unmap_memory(staging_buffer.memory);
 
-                self.get_device().reset_command_buffer(
+                self.device.reset_command_buffer(
                     command_buffer,
                     vk::CommandBufferResetFlags::RELEASE_RESOURCES,
                 )?;
@@ -319,7 +319,7 @@ impl Gpu {
                 .get_device()
                 .create_buffer(&buffer_info, None)
                 .expect("Failed to create staging buffer");
-            let mem_requirements = self.get_device().get_buffer_memory_requirements(buffer);
+            let mem_requirements = self.device.get_buffer_memory_requirements(buffer);
 
             let requested_properties = if device_local_staging {
                 vk::MemoryPropertyFlags::HOST_VISIBLE
@@ -344,7 +344,7 @@ impl Gpu {
                 .get_device()
                 .allocate_memory(&alloc_info, None)
                 .expect("Failed to allocate staging memory");
-            self.get_device()
+            self.device
                 .bind_buffer_memory(buffer, memory, 0)
                 .expect("Failed to bind staging buffer memory");
 

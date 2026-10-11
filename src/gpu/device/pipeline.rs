@@ -344,7 +344,14 @@ impl Gpu {
                     self.bind_push_constants(command_buffer, shader, push_constants.as_bytes());
                 }
 
-                self.dispatch(command_buffer, *local_size, *work_size);
+                let dispatch_x = work_size[0].div_ceil(local_size[0]);
+                let dispatch_y = work_size[1].div_ceil(local_size[1]);
+                let dispatch_z = work_size[2].div_ceil(local_size[2]);
+
+                unsafe {
+                    self.device
+                        .cmd_dispatch(command_buffer, dispatch_x, dispatch_y, dispatch_z);
+                }
             }
             VkOperation::Copy { src, dst } => {
                 let src_tensor = cm.tensor_read(*src);
@@ -352,14 +359,14 @@ impl Gpu {
                 let dst_tensor = cm.tensor_read(*dst);
                 let dst_mem = dst_tensor.get_gpu_memory_or_panic();
 
-                unsafe {
-                    let copy_region = vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: 0,
-                        size: src_mem.size,
-                    };
+                let copy_region = vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: src_mem.size,
+                };
 
-                    self.get_device().cmd_copy_buffer(
+                unsafe {
+                    self.device.cmd_copy_buffer(
                         command_buffer,
                         src_mem.buffer,
                         dst_mem.buffer,
