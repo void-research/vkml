@@ -105,7 +105,7 @@ impl Instruction for ReduceMeanInstruction {
                     local_size,
                     work_size: [out_elements, 1, 1],
                     push_constants: PushConstants::from_struct(&mean_pc),
-                    storage_buffers: vec![Some(self.src), Some(self.dst)],
+                    storage_buffers: Box::new([Some(self.src), Some(self.dst)]),
                 })))
             }
             ComputeTarget::Cpu => {

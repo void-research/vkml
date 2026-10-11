@@ -123,7 +123,7 @@ impl Instruction for ShapeInstruction {
                     local_size,
                     work_size: [slice_len as u32, 1, 1],
                     push_constants: PushConstants::from_struct(&pc),
-                    storage_buffers: vec![Some(self.dst)],
+                    storage_buffers: Box::new([Some(self.dst)]),
                 })))
             }
             ComputeTarget::Cpu => Ok(Some(Dispatch::Cpu)),

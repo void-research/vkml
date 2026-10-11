@@ -146,7 +146,7 @@ impl Instruction for AddInstruction {
                     local_size,
                     work_size: [num_elements, 1, 1],
                     push_constants,
-                    storage_buffers: vec![Some(self.src1), Some(self.src2), Some(self.dst)],
+                    storage_buffers: Box::new([Some(self.src1), Some(self.src2), Some(self.dst)]),
                 })))
             }
             ComputeTarget::Cpu => {

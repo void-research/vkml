@@ -280,12 +280,12 @@ impl Instruction for ConvInstruction {
                     local_size,
                     work_size,
                     push_constants,
-                    storage_buffers: vec![
+                    storage_buffers: Box::new([
                         Some(self.src),
                         Some(self.weights),
                         Some(self.dst),
                         self.bias,
-                    ],
+                    ]),
                 })))
             }
         }

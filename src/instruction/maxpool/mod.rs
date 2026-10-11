@@ -227,7 +227,7 @@ impl Instruction for MaxPoolInstruction {
                     local_size,
                     work_size,
                     push_constants,
-                    storage_buffers: vec![Some(self.src), Some(self.dst)],
+                    storage_buffers: Box::new([Some(self.src), Some(self.dst)]),
                 })))
             }
         }

@@ -110,7 +110,7 @@ impl Instruction for ExpandInstruction {
                     local_size,
                     work_size: [num_elements, 1, 1],
                     push_constants: PushConstants::from_struct(&push_const_values),
-                    storage_buffers: vec![Some(self.src), Some(self.dst)],
+                    storage_buffers: Box::new([Some(self.src), Some(self.dst)]),
                 })))
             }
             ComputeTarget::Cpu => {

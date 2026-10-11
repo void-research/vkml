@@ -170,7 +170,7 @@ impl Instruction for GemmInstruction {
                     local_size,
                     work_size: [n as u32, m as u32, 1],
                     push_constants: PushConstants::from_struct(&pc),
-                    storage_buffers: vec![Some(self.a), Some(self.b), self.c, Some(self.y)],
+                    storage_buffers: Box::new([Some(self.a), Some(self.b), self.c, Some(self.y)]),
                 })))
             }
         }

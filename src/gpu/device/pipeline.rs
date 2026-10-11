@@ -4,8 +4,9 @@ use vulkanalia::vk::{self, DeviceV1_0, DeviceV1_4, Handle};
 
 use crate::{
     ComputeManager,
-    gpu::{Gpu, memory::GpuMemory},
+    gpu::Gpu,
     instruction::{Shader, VkOperation},
+    tensor_graph::TensorId,
     utils::error::VKMLError,
 };
 
@@ -204,68 +205,29 @@ impl Gpu {
     }
 
     // bind GPU storage buffers to descriptor set bindings
-    pub fn bind_storage_buffers(&self, command_buffer: vk::CommandBuffer, buffers: &[&GpuMemory]) {
-        unsafe {
-            let buffer_infos: Box<_> = buffers
-                .iter()
-                .map(|mem| vk::DescriptorBufferInfo {
-                    buffer: mem.buffer,
-                    offset: 0,
-                    range: mem.size,
-                })
-                .collect();
-
-            let write_descriptor_sets: Box<_> = buffer_infos
-                .iter()
-                .enumerate()
-                .map(|(i, info)| vk::WriteDescriptorSet {
-                    s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-                    next: ptr::null(),
-                    dst_set: vk::DescriptorSet::null(),
-                    dst_binding: i as u32,
-                    dst_array_element: 0,
-                    descriptor_count: 1,
-                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                    buffer_info: info,
-                    image_info: ptr::null(),
-                    texel_buffer_view: ptr::null(),
-                })
-                .collect();
-
-            self.device.cmd_push_descriptor_set(
-                command_buffer,
-                vk::PipelineBindPoint::COMPUTE,
-                self.get_pipeline_layout(buffers.len()),
-                0,
-                &write_descriptor_sets,
-            );
-        }
-    }
-
-    /// Bind GPU storage buffers (supporting Option<&GPUMemory>) to descriptor set bindings.
-    /// Optional buffers will be bound as null buffers with size 0.
-    pub fn bind_storage_buffers_optional(
+    pub fn bind_storage_buffers(
         &self,
         command_buffer: vk::CommandBuffer,
-        buffers: &[Option<&GpuMemory>],
+        storage_buffers: &[Option<TensorId>],
+        cm: &ComputeManager,
     ) {
         unsafe {
-            let buffer_infos: Box<_> = buffers
+            let buffer_infos: Box<_> = storage_buffers
                 .iter()
-                .map(|mem_opt| {
-                    if let Some(mem) = mem_opt {
+                .map(|id_opt| match id_opt {
+                    Some(id) => {
+                        let mem = cm.tensor_read(*id).get_gpu_memory_or_panic();
                         vk::DescriptorBufferInfo {
                             buffer: mem.buffer,
                             offset: 0,
                             range: mem.size,
                         }
-                    } else {
-                        vk::DescriptorBufferInfo {
-                            buffer: vk::Buffer::null(),
-                            offset: 0,
-                            range: 0,
-                        }
                     }
+                    None => vk::DescriptorBufferInfo {
+                        buffer: vk::Buffer::null(),
+                        offset: 0,
+                        range: 0,
+                    },
                 })
                 .collect();
 
@@ -289,7 +251,7 @@ impl Gpu {
             self.device.cmd_push_descriptor_set(
                 command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
-                self.get_pipeline_layout(buffers.len()),
+                self.get_pipeline_layout(storage_buffers.len()),
                 0,
                 &write_descriptor_sets,
             );
@@ -329,16 +291,7 @@ impl Gpu {
                 storage_buffers,
             } => {
                 self.bind_slang_compute_pipeline(command_buffer, shader, *dtype, *local_size);
-
-                let tensors: Vec<Option<_>> = storage_buffers
-                    .iter()
-                    .map(|id_opt| id_opt.map(|id| cm.tensor_read(id)))
-                    .collect();
-                let memories: Vec<Option<&GpuMemory>> = tensors
-                    .iter()
-                    .map(|t_opt| t_opt.as_ref().map(|t| t.get_gpu_memory_or_panic()))
-                    .collect();
-                self.bind_storage_buffers_optional(command_buffer, &memories);
+                self.bind_storage_buffers(command_buffer, storage_buffers, cm);
 
                 if !push_constants.is_empty() {
                     self.bind_push_constants(command_buffer, shader, push_constants.as_bytes());

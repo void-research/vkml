@@ -15,7 +15,7 @@ pub enum VkOperation {
         local_size: [u32; 3],
         work_size: [u32; 3],
         push_constants: PushConstants,
-        storage_buffers: Vec<Option<TensorId>>,
+        storage_buffers: Box<[Option<TensorId>]>,
     },
     Copy {
         src: TensorId,

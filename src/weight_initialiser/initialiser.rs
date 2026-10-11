@@ -46,7 +46,7 @@ impl Initialiser {
     // a lot of these will require a copy for now
     pub fn into_cpu_buffer(self) -> Box<[u8]> {
         match self {
-            Initialiser::Bytes(bytes) => bytes.to_vec().into(),
+            Initialiser::Bytes(bytes) => bytes.as_ref().into(),
             Initialiser::VecBytes(parts) => parts.iter().flatten().copied().collect::<Box<[u8]>>(),
             Initialiser::BoxU8(boxed) => boxed,
             Initialiser::VecU8(vec) => vec.into(),

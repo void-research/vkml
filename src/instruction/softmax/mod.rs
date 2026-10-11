@@ -101,7 +101,7 @@ impl Instruction for SoftmaxInstruction {
                     local_size,
                     work_size: [(batch_size * local_size[0] as usize) as u32, 1, 1],
                     push_constants: PushConstants::from_struct(&push_constants),
-                    storage_buffers: vec![Some(self.src), Some(self.dst)],
+                    storage_buffers: Box::new([Some(self.src), Some(self.dst)]),
                 })))
             }
             ComputeTarget::Cpu => {

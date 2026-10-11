@@ -423,7 +423,7 @@ impl Instruction for MatMulInstruction {
                     local_size,
                     work_size,
                     push_constants,
-                    storage_buffers: vec![Some(self.src1), Some(self.src2), Some(self.dst)],
+                    storage_buffers: Box::new([Some(self.src1), Some(self.src2), Some(self.dst)]),
                 })))
             }
         }

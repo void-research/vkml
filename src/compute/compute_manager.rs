@@ -421,7 +421,7 @@ impl ComputeManager {
         }
     }
 
-    pub fn forward(&mut self, batches: Vec<Tensor>) -> Result<Vec<TensorId>, VKMLError> {
+    pub fn forward(&mut self, batches: Vec<Tensor>) -> Result<Box<[TensorId]>, VKMLError> {
         let input_tensor_ids = self.tensor_graph.get_input_tensor_ids();
 
         if batches.len() != input_tensor_ids.len() {
@@ -471,7 +471,7 @@ impl ComputeManager {
 
         self.execute()?;
 
-        Ok(self.tensor_graph.get_output_tensor_ids().to_vec())
+        Ok(self.tensor_graph.get_output_tensor_ids().into())
     }
 
     pub fn execute(&mut self) -> Result<(), VKMLError> {
@@ -559,7 +559,7 @@ impl ComputeManager {
 
     // safety: uses UnsafeCell; scheduler guarantees exclusive mutable access
     #[allow(clippy::mut_from_ref)]
-    pub fn tensor_write(&self, tensor_id: usize) -> &mut Tensor {
+    pub(crate) fn tensor_write(&self, tensor_id: usize) -> &mut Tensor {
         unsafe { self.tensors[tensor_id].as_mut() }
     }
 }
