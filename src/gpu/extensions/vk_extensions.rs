@@ -55,6 +55,7 @@ pub struct VkExtensions {
     storage_16bit: bool,
     shader_bfloat16: bool,
     shader_atomic_float: bool,
+    shader_atomic_float2: bool,
     cooperative_matrix: Option<Vec<CoopMatrixShape>>,
     cooperative_matrix_nv2: Option<CoopMatrixNV2Capabilities>,
 }
@@ -68,6 +69,7 @@ impl VkExtensions {
     pub const VK_KHR_16BIT_STORAGE: &'static CStr = c"VK_KHR_16bit_storage";
     pub const VK_KHR_SHADER_BFLOAT16: &'static CStr = c"VK_KHR_shader_bfloat16";
     pub const VK_EXT_SHADER_ATOMIC_FLOAT: &'static CStr = c"VK_EXT_shader_atomic_float";
+    pub const VK_EXT_SHADER_ATOMIC_FLOAT2: &'static CStr = c"VK_EXT_shader_atomic_float2";
 
     pub fn from_extension_properties(
         instance: &Instance,
@@ -94,6 +96,7 @@ impl VkExtensions {
                 b"VK_KHR_16bit_storage" => res.storage_16bit = true,
                 b"VK_KHR_shader_bfloat16" => res.shader_bfloat16 = true,
                 b"VK_EXT_shader_atomic_float" => res.shader_atomic_float = true,
+                b"VK_EXT_shader_atomic_float2" => res.shader_atomic_float2 = true,
                 _ => {}
             }
         }
@@ -158,6 +161,9 @@ impl VkExtensions {
         }
         if self.shader_atomic_float {
             v.push(Self::VK_EXT_SHADER_ATOMIC_FLOAT);
+        }
+        if self.shader_atomic_float2 {
+            v.push(Self::VK_EXT_SHADER_ATOMIC_FLOAT2);
         }
 
         v
@@ -247,6 +253,19 @@ impl VkExtensions {
                 s_type: vk::StructureType::PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT,
                 next: ptr::null_mut(),
                 shader_buffer_float32_atomic_add: vk::TRUE,
+                shader_buffer_float64_atomic_add: vk::TRUE,
+                ..Default::default()
+            });
+            feat.next = head as *mut _;
+            head = (&*feat) as *const _ as *mut c_void;
+            holders.push(feat);
+        }
+
+        if self.shader_atomic_float2 {
+            let mut feat = Box::new(vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT {
+                s_type: vk::StructureType::PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT,
+                next: ptr::null_mut(),
+                shader_buffer_float16_atomic_add: vk::TRUE,
                 ..Default::default()
             });
             feat.next = head as *mut _;
@@ -283,8 +302,12 @@ impl VkExtensions {
         self.shader_bfloat16 && self.shader_float_16_int8
     }
 
-    pub fn supports_shader_atomic_float(&self) -> bool {
-        self.shader_atomic_float
+    pub fn supports_atomic_float(&self, dtype: DataType) -> bool {
+        match dtype {
+            DataType::Float | DataType::Double => self.shader_atomic_float,
+            DataType::Float16 => self.shader_atomic_float2,
+            _ => false,
+        }
     }
 
     pub fn has_memory_budget(&self) -> bool {

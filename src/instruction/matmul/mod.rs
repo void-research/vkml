@@ -18,9 +18,17 @@ use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
 pub static MATMUL_1D2D: Shader = slang!("matmul_1d2d.slang", 3);
-pub static MATMUL_1D2D_ATOMIC: Shader = slang!("matmul_1d2d_atomic.slang", 3, &[DataType::Float]);
+pub static MATMUL_1D2D_ATOMIC: Shader = slang!(
+    "matmul_1d2d_atomic.slang",
+    3,
+    &[DataType::Float, DataType::Float16, DataType::Double]
+);
 pub static MATMUL_2D1D: Shader = slang!("matmul_2d1d.slang", 3);
-pub static MATMUL_2D1D_ATOMIC: Shader = slang!("matmul_2d1d_atomic.slang", 3, &[DataType::Float]);
+pub static MATMUL_2D1D_ATOMIC: Shader = slang!(
+    "matmul_2d1d_atomic.slang",
+    3,
+    &[DataType::Float, DataType::Float16, DataType::Double]
+);
 pub static MATMUL_2D2D: Shader = slang!("matmul_2d2d.slang", 3);
 pub static MATMUL_3D1D: Shader = slang!("matmul_3d1d.slang", 3);
 pub static MATMUL_1D3D: Shader = slang!("matmul_1d3d.slang", 3);
@@ -174,12 +182,17 @@ impl Instruction for MatMulInstruction {
                         let k = *src1_dims.last().unwrap();
                         let n = src2_dims[1];
 
-                        if gpu.extensions().supports_shader_atomic_float()
-                            && dst_dtype == DataType::Float
-                            && n < 32
-                            && k >= 16384
+                        let num_slices = 64u32;
+                        let max_y = gpu.max_workgroup_size()[1].max(1);
+                        let local_y = 1 << (128u32.min(max_y)).ilog2();
+                        // For Split-K to amortize workgroup barrier and atomic add overhead,
+                        // each thread in the slice must have at least 2 reduction iterations.
+                        let min_k = (num_slices * local_y * 2) as i64;
+
+                        if gpu.extensions().supports_atomic_float(dst_dtype)
+                            && n <= gpu.subgroup_size() as i64
+                            && k >= min_k
                         {
-                            let num_slices = 64u32;
                             let pc = MatMul1D2DAtomicPushConstants {
                                 k: k as u32,
                                 n: n as u32,
@@ -190,8 +203,6 @@ impl Instruction for MatMulInstruction {
                                 stride_c: *dst_strides.last().unwrap() as u32,
                             };
 
-                            let max_y = gpu.max_workgroup_size()[1].max(1);
-                            let local_y = 1 << (128u32.min(max_y)).ilog2();
                             let local = [1, local_y, 1];
                             let work = [n as u32, num_slices * local_y, 1];
 
@@ -227,12 +238,17 @@ impl Instruction for MatMulInstruction {
                         let m = src1_dims[0];
                         let k = src1_dims[1];
 
-                        if gpu.extensions().supports_shader_atomic_float()
-                            && dst_dtype == DataType::Float
-                            && m < 32
-                            && k >= 16384
+                        let num_slices = 64u32;
+                        let max_y = gpu.max_workgroup_size()[1].max(1);
+                        let local_y = 1 << (128u32.min(max_y)).ilog2();
+                        // For Split-K to amortize workgroup barrier and atomic add overhead,
+                        // each thread in the slice must have at least 2 reduction iterations.
+                        let min_k = (num_slices * local_y * 2) as i64;
+
+                        if gpu.extensions().supports_atomic_float(dst_dtype)
+                            && m <= gpu.subgroup_size() as i64
+                            && k >= min_k
                         {
-                            let num_slices = 64u32;
                             let pc = MatMul2D1DAtomicPushConstants {
                                 m: m as u32,
                                 k: k as u32,
@@ -243,8 +259,6 @@ impl Instruction for MatMulInstruction {
                                 stride_c: *dst_strides.last().unwrap() as u32,
                             };
 
-                            let max_y = gpu.max_workgroup_size()[1].max(1);
-                            let local_y = 1 << (128u32.min(max_y)).ilog2();
                             let local = [1, local_y, 1];
                             let work = [m as u32, num_slices * local_y, 1];
 

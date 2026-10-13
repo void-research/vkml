@@ -19,12 +19,41 @@ struct PushConstants
 [[vk::push_constant]]
 PushConstants pc;
 
+interface IAtomicAdd
+{
+    static void add(RWStructuredBuffer<This> buf, uint index, This val);
+};
+
+extension float : IAtomicAdd
+{
+    static void add(RWStructuredBuffer<float> buf, uint index, float val)
+    {
+        InterlockedAdd(buf[index], val);
+    }
+};
+
+extension half : IAtomicAdd
+{
+    static void add(RWStructuredBuffer<half> buf, uint index, half val)
+    {
+        InterlockedAdd(buf[index], val);
+    }
+};
+
+extension double : IAtomicAdd
+{
+    static void add(RWStructuredBuffer<double> buf, uint index, double val)
+    {
+        InterlockedAdd(buf[index], val);
+    }
+};
+
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
-void main<T : IArithmetic>(
-    StructuredBuffer<float> src1,
-    StructuredBuffer<float> src2,
-    RWStructuredBuffer<float> dst,
+void main<T : IArithmetic & IAtomicAdd>(
+    StructuredBuffer<T> src1,
+    StructuredBuffer<T> src2,
+    RWStructuredBuffer<T> dst,
     uint3 groupId: SV_GroupID,
     uint3 threadId: SV_GroupThreadID)
 {
@@ -36,7 +65,7 @@ void main<T : IArithmetic>(
     uint k_start = slice * slice_size;
     uint k_end = min(k_start + slice_size, pc.k);
 
-    float sum = 0.0f;
+    T sum = T(0);
 
     if (col < pc.n && k_start < pc.k)
     {
@@ -48,7 +77,7 @@ void main<T : IArithmetic>(
 
     if (WORKGROUP_SIZE_Y > 1)
     {
-        static groupshared float sdata[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
+        static groupshared T sdata[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
         uint shmem_idx = threadId.x * WORKGROUP_SIZE_Y + tid;
         sdata[shmem_idx] = sum;
         GroupMemoryBarrierWithGroupSync();
@@ -64,11 +93,11 @@ void main<T : IArithmetic>(
 
         if (tid == 0 && col < pc.n)
         {
-            InterlockedAdd(dst[col * pc.stride_c], sdata[shmem_idx]);
+            T.add(dst, col * pc.stride_c, sdata[shmem_idx]);
         }
     }
     else if (col < pc.n)
     {
-        InterlockedAdd(dst[col * pc.stride_c], sum);
+        T.add(dst, col * pc.stride_c, sum);
     }
 }
