@@ -54,6 +54,7 @@ pub struct VkExtensions {
     shader_float_16_int8: bool,
     storage_16bit: bool,
     shader_bfloat16: bool,
+    shader_atomic_float: bool,
     cooperative_matrix: Option<Vec<CoopMatrixShape>>,
     cooperative_matrix_nv2: Option<CoopMatrixNV2Capabilities>,
 }
@@ -66,6 +67,7 @@ impl VkExtensions {
     pub const VK_KHR_SHADER_FLOAT16_INT8: &'static CStr = c"VK_KHR_shader_float16_int8";
     pub const VK_KHR_16BIT_STORAGE: &'static CStr = c"VK_KHR_16bit_storage";
     pub const VK_KHR_SHADER_BFLOAT16: &'static CStr = c"VK_KHR_shader_bfloat16";
+    pub const VK_EXT_SHADER_ATOMIC_FLOAT: &'static CStr = c"VK_EXT_shader_atomic_float";
 
     pub fn from_extension_properties(
         instance: &Instance,
@@ -91,6 +93,7 @@ impl VkExtensions {
                 b"VK_KHR_shader_float16_int8" => res.shader_float_16_int8 = true,
                 b"VK_KHR_16bit_storage" => res.storage_16bit = true,
                 b"VK_KHR_shader_bfloat16" => res.shader_bfloat16 = true,
+                b"VK_EXT_shader_atomic_float" => res.shader_atomic_float = true,
                 _ => {}
             }
         }
@@ -152,6 +155,9 @@ impl VkExtensions {
         }
         if self.shader_bfloat16 {
             v.push(Self::VK_KHR_SHADER_BFLOAT16);
+        }
+        if self.shader_atomic_float {
+            v.push(Self::VK_EXT_SHADER_ATOMIC_FLOAT);
         }
 
         v
@@ -236,6 +242,18 @@ impl VkExtensions {
             holders.push(feat);
         }
 
+        if self.shader_atomic_float {
+            let mut feat = Box::new(vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT {
+                s_type: vk::StructureType::PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT,
+                next: ptr::null_mut(),
+                shader_buffer_float32_atomic_add: vk::TRUE,
+                ..Default::default()
+            });
+            feat.next = head as *mut _;
+            head = (&*feat) as *const _ as *mut c_void;
+            holders.push(feat);
+        }
+
         DeviceCreateExtras {
             name_ptrs: self
                 .enabled_extension_names()
@@ -263,6 +281,10 @@ impl VkExtensions {
 
     pub fn supports_bf16(&self) -> bool {
         self.shader_bfloat16 && self.shader_float_16_int8
+    }
+
+    pub fn supports_shader_atomic_float(&self) -> bool {
+        self.shader_atomic_float
     }
 
     pub fn has_memory_budget(&self) -> bool {

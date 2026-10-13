@@ -327,6 +327,10 @@ impl Gpu {
         &self.extensions
     }
 
+    pub fn supports_shader_atomic_float(&self) -> bool {
+        self.extensions.supports_shader_atomic_float()
+    }
+
     pub fn supports_dtype(&self, dtype: DataType) -> bool {
         match dtype {
             DataType::Float => true,
