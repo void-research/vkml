@@ -17,6 +17,15 @@ pub enum VkOperation {
         push_constants: PushConstants,
         storage_buffers: Box<[Option<TensorId>]>,
     },
+    ClearAndCompute {
+        clear_dst: TensorId,
+        shader: &'static Shader,
+        dtype: DataType,
+        local_size: [u32; 3],
+        work_size: [u32; 3],
+        push_constants: PushConstants,
+        storage_buffers: Box<[Option<TensorId>]>,
+    },
     Copy {
         src: TensorId,
         dst: TensorId,

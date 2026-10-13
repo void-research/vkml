@@ -1,6 +1,6 @@
 use onnx_extractor::DataType;
 use std::{ffi::c_void, ptr};
-use vulkanalia::vk::{self, DeviceV1_0, DeviceV1_4, Handle};
+use vulkanalia::vk::{self, DeviceV1_0, DeviceV1_3, DeviceV1_4, Handle};
 
 use crate::{
     ComputeManager,
@@ -305,6 +305,63 @@ impl Gpu {
                     self.device
                         .cmd_dispatch(command_buffer, dispatch_x, dispatch_y, dispatch_z);
                 }
+            }
+            VkOperation::ClearAndCompute {
+                clear_dst,
+                shader,
+                dtype,
+                local_size,
+                work_size,
+                push_constants,
+                storage_buffers,
+            } => {
+                let dst_tensor = cm.tensor_read(clear_dst);
+                let dst_mem = dst_tensor.get_gpu_memory_or_panic();
+
+                unsafe {
+                    self.device
+                        .cmd_fill_buffer(command_buffer, dst_mem.buffer, 0, dst_mem.size, 0);
+
+                    let buffer_barrier = vk::BufferMemoryBarrier2 {
+                        s_type: vk::StructureType::BUFFER_MEMORY_BARRIER_2,
+                        next: ptr::null(),
+                        src_stage_mask: vk::PipelineStageFlags2::ALL_TRANSFER,
+                        src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                        dst_stage_mask: vk::PipelineStageFlags2::COMPUTE_SHADER,
+                        dst_access_mask: vk::AccessFlags2::SHADER_READ
+                            | vk::AccessFlags2::SHADER_WRITE,
+                        src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                        dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                        buffer: dst_mem.buffer,
+                        offset: 0,
+                        size: dst_mem.size,
+                    };
+                    let dep_info = vk::DependencyInfo {
+                        s_type: vk::StructureType::DEPENDENCY_INFO,
+                        next: ptr::null(),
+                        dependency_flags: vk::DependencyFlags::empty(),
+                        memory_barrier_count: 0,
+                        memory_barriers: ptr::null(),
+                        buffer_memory_barrier_count: 1,
+                        buffer_memory_barriers: &buffer_barrier,
+                        image_memory_barrier_count: 0,
+                        image_memory_barriers: ptr::null(),
+                    };
+                    self.device.cmd_pipeline_barrier2(command_buffer, &dep_info);
+                }
+
+                self.record_vk_operation(
+                    command_buffer,
+                    VkOperation::Compute {
+                        shader,
+                        dtype,
+                        local_size,
+                        work_size,
+                        push_constants,
+                        storage_buffers,
+                    },
+                    cm,
+                );
             }
             VkOperation::Copy { src, dst } => {
                 let src_tensor = cm.tensor_read(src);

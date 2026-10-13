@@ -4,8 +4,9 @@ mod push_constants;
 use crate::VKMLError;
 use crate::instruction::matmul::f32_f32_f32_cpu::f32_f32_f32_cpu;
 use crate::instruction::matmul::push_constants::{
-    MatMul1D2DPushConstants, MatMul1D3DPushConstants, MatMul2D1DPushConstants,
-    MatMul2D2DPushConstants, MatMul3D1DPushConstants, MatMulTiledPushConstants,
+    MatMul1D2DAtomicPushConstants, MatMul1D2DPushConstants, MatMul1D3DPushConstants,
+    MatMul2D1DAtomicPushConstants, MatMul2D1DPushConstants, MatMul2D2DPushConstants,
+    MatMul3D1DPushConstants, MatMulTiledPushConstants,
 };
 use crate::{
     ComputeManager,
@@ -17,7 +18,9 @@ use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
 pub static MATMUL_1D2D: Shader = slang!("matmul_1d2d.slang", 3);
+pub static MATMUL_1D2D_ATOMIC: Shader = slang!("matmul_1d2d_atomic.slang", 3, &[DataType::Float]);
 pub static MATMUL_2D1D: Shader = slang!("matmul_2d1d.slang", 3);
+pub static MATMUL_2D1D_ATOMIC: Shader = slang!("matmul_2d1d_atomic.slang", 3, &[DataType::Float]);
 pub static MATMUL_2D2D: Shader = slang!("matmul_2d2d.slang", 3);
 pub static MATMUL_3D1D: Shader = slang!("matmul_3d1d.slang", 3);
 pub static MATMUL_1D3D: Shader = slang!("matmul_1d3d.slang", 3);
@@ -171,6 +174,42 @@ impl Instruction for MatMulInstruction {
                         let k = *src1_dims.last().unwrap();
                         let n = src2_dims[1];
 
+                        if gpu.extensions().supports_shader_atomic_float()
+                            && dst_dtype == DataType::Float
+                            && n < 32
+                            && k >= 16384
+                        {
+                            let num_slices = 64u32;
+                            let pc = MatMul1D2DAtomicPushConstants {
+                                k: k as u32,
+                                n: n as u32,
+                                num_slices,
+                                stride_a: *src1_strides.last().unwrap() as u32,
+                                stride_b0: src2_strides[0] as u32,
+                                stride_b1: src2_strides[1] as u32,
+                                stride_c: *dst_strides.last().unwrap() as u32,
+                            };
+
+                            let max_y = gpu.max_workgroup_size()[1].max(1);
+                            let local_y = 1 << (128u32.min(max_y)).ilog2();
+                            let local = [1, local_y, 1];
+                            let work = [n as u32, num_slices * local_y, 1];
+
+                            return Ok(Some(Dispatch::Gpu(VkOperation::ClearAndCompute {
+                                clear_dst: self.dst,
+                                shader: &MATMUL_1D2D_ATOMIC,
+                                dtype: dst_dtype,
+                                local_size: local,
+                                work_size: work,
+                                push_constants: PushConstants::from_struct(&pc),
+                                storage_buffers: Box::new([
+                                    Some(self.src1),
+                                    Some(self.src2),
+                                    Some(self.dst),
+                                ]),
+                            })));
+                        }
+
                         let pc = MatMul1D2DPushConstants {
                             k: k as u32,
                             n: n as u32,
@@ -187,6 +226,42 @@ impl Instruction for MatMulInstruction {
                     MatMulVariant::D2D1 => {
                         let m = src1_dims[0];
                         let k = src1_dims[1];
+
+                        if gpu.extensions().supports_shader_atomic_float()
+                            && dst_dtype == DataType::Float
+                            && m < 32
+                            && k >= 16384
+                        {
+                            let num_slices = 64u32;
+                            let pc = MatMul2D1DAtomicPushConstants {
+                                m: m as u32,
+                                k: k as u32,
+                                num_slices,
+                                stride_a0: src1_strides[0] as u32,
+                                stride_a1: src1_strides[1] as u32,
+                                stride_b: *src2_strides.last().unwrap() as u32,
+                                stride_c: *dst_strides.last().unwrap() as u32,
+                            };
+
+                            let max_y = gpu.max_workgroup_size()[1].max(1);
+                            let local_y = 1 << (128u32.min(max_y)).ilog2();
+                            let local = [1, local_y, 1];
+                            let work = [m as u32, num_slices * local_y, 1];
+
+                            return Ok(Some(Dispatch::Gpu(VkOperation::ClearAndCompute {
+                                clear_dst: self.dst,
+                                shader: &MATMUL_2D1D_ATOMIC,
+                                dtype: dst_dtype,
+                                local_size: local,
+                                work_size: work,
+                                push_constants: PushConstants::from_struct(&pc),
+                                storage_buffers: Box::new([
+                                    Some(self.src1),
+                                    Some(self.src2),
+                                    Some(self.dst),
+                                ]),
+                            })));
+                        }
 
                         let pc = MatMul2D1DPushConstants {
                             m: m as u32,
