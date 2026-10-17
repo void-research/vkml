@@ -14,7 +14,7 @@ use crate::{
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static SHADER: Shader = shader!("sigmoid", [Float, Float16]);
+pub static SHADER: Shader = shader!("sigmoid", Float);
 
 pub struct SigmoidInstruction {
     pub src: TensorId,
