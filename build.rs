@@ -15,7 +15,6 @@ const TYPES: &[(&str, &str)] = &[
     ("Uint32", "uint"),
     ("Int64", "int64_t"),
     ("Uint64", "uint64_t"),
-    ("Bool", "bool"),
 ];
 
 fn find_slang_files(dir: &Path, files: &mut Vec<PathBuf>) {
