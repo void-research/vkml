@@ -7,14 +7,14 @@ use crate::instruction::expand::f32_f32_cpu::f32_f32_cpu;
 use crate::instruction::expand::push_constants::ExpandPushConstants;
 use crate::utils::math::broadcast_strides;
 use crate::{
-    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, slang},
+    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, shader},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static SHADER: Shader = slang!("expand.slang", 2);
+pub static SHADER: Shader = shader!("expand");
 
 pub struct ExpandInstruction {
     pub src: TensorId,
@@ -71,12 +71,13 @@ impl Instruction for ExpandInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                if src_desc.data_type() != dst_dtype
-                    || !gpu.supports_dtype(dst_dtype)
-                    || !SHADER.supported_types.contains(&dst_dtype)
-                {
+                if src_desc.data_type() != dst_dtype {
                     return Ok(None);
                 }
+
+                let Some(spv) = gpu.get_spirv(&SHADER, dst_dtype) else {
+                    return Ok(None);
+                };
 
                 let rank = dst_dims.len() as u32;
 
@@ -105,8 +106,7 @@ impl Instruction for ExpandInstruction {
                 let local_size = gpu.workgroup_size_1d();
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader: &SHADER,
-                    dtype: dst_dtype,
+                    spv,
                     local_size,
                     work_size: [num_elements, 1, 1],
                     push_constants: PushConstants::from_struct(&push_const_values),

@@ -5,8 +5,8 @@ use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     ComputeManager,
     instruction::{
-        Dispatch, FLOAT_TYPES, Instruction, PushConstants, Shader, VkOperation,
-        sigmoid::f32_f32_cpu::f32_f32_cpu, slang,
+        Dispatch, Instruction, PushConstants, Shader, VkOperation, shader,
+        sigmoid::f32_f32_cpu::f32_f32_cpu,
     },
     tensor::ComputeTarget,
     tensor_graph::TensorId,
@@ -14,7 +14,7 @@ use crate::{
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static SHADER: Shader = slang!("sigmoid.slang", 2, FLOAT_TYPES);
+pub static SHADER: Shader = shader!("sigmoid", [Float, Float16]);
 
 pub struct SigmoidInstruction {
     pub src: TensorId,
@@ -57,19 +57,19 @@ impl Instruction for SigmoidInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                if src_desc.data_type() != dst_dtype
-                    || !gpu.supports_dtype(dst_dtype)
-                    || !SHADER.supported_types.contains(&dst_dtype)
-                {
+                if src_desc.data_type() != dst_dtype {
                     return Ok(None);
                 }
+
+                let Some(spv) = gpu.get_spirv(&SHADER, dst_dtype) else {
+                    return Ok(None);
+                };
 
                 let num_elements = dst_desc.num_elements() as u32;
                 let local_size = gpu.workgroup_size_1d();
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader: &SHADER,
-                    dtype: dst_dtype,
+                    spv,
                     local_size,
                     work_size: [num_elements, 1, 1],
                     push_constants: PushConstants::from_struct(&num_elements),

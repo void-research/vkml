@@ -9,7 +9,7 @@ use crate::{
     utils::error::VKMLError,
 };
 
-pub(crate) struct StagingResources {
+pub struct StagingResources {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
     pub size: vk::DeviceSize,
@@ -316,7 +316,7 @@ impl Gpu {
             };
 
             let buffer = self
-                .get_device()
+                .device
                 .create_buffer(&buffer_info, None)
                 .expect("Failed to create staging buffer");
             let mem_requirements = self.device.get_buffer_memory_requirements(buffer);
@@ -341,7 +341,7 @@ impl Gpu {
             };
 
             let memory = self
-                .get_device()
+                .device
                 .allocate_memory(&alloc_info, None)
                 .expect("Failed to allocate staging memory");
             self.device
@@ -353,13 +353,13 @@ impl Gpu {
             let command_buffer_info = vk::CommandBufferAllocateInfo {
                 s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
                 next: std::ptr::null(),
-                command_pool: self.get_command_pool(),
+                command_pool: self.command_pool,
                 level: vk::CommandBufferLevel::PRIMARY,
                 command_buffer_count: 1,
             };
 
             let command_buffers = self
-                .get_device()
+                .device
                 .allocate_command_buffers(&command_buffer_info)
                 .expect("Failed to allocate staging command buffer");
             let command_buffer = command_buffers[0];
@@ -370,7 +370,7 @@ impl Gpu {
                 flags: vk::FenceCreateFlags::empty(),
             };
             let fence = self
-                .get_device()
+                .device
                 .create_fence(&fence_info, None)
                 .expect("Failed to create staging fence");
 

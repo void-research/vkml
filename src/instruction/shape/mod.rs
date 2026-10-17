@@ -2,13 +2,13 @@ mod push_constants;
 
 use crate::VKMLError;
 use crate::instruction::shape::push_constants::ShapePushConstants;
-use crate::instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, slang};
+use crate::instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, shader};
 use crate::tensor::{ComputeTarget, TensorDesc};
 use crate::{ComputeManager, tensor_graph::TensorId};
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static SHADER: Shader = slang!("shape.slang", 1, &[DataType::Int64]);
+pub static SHADER: Shader = shader!("shape", [Int64]);
 
 pub struct ShapeInstruction {
     pub src: TensorId,
@@ -64,11 +64,9 @@ impl Instruction for ShapeInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                if !gpu.supports_dtype(DataType::Int64)
-                    || !SHADER.supported_types.contains(&DataType::Int64)
-                {
+                let Some(spv) = gpu.get_spirv(&SHADER, DataType::Int64) else {
                     return Ok(None);
-                }
+                };
 
                 let src_desc = cm.tensor_desc(self.src);
                 let rank = src_desc.ndim() as i64;
@@ -118,8 +116,7 @@ impl Instruction for ShapeInstruction {
                 let local_size = gpu.workgroup_size_1d();
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader: &SHADER,
-                    dtype: dst_dtype,
+                    spv,
                     local_size,
                     work_size: [slice_len as u32, 1, 1],
                     push_constants: PushConstants::from_struct(&pc),

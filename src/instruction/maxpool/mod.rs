@@ -10,7 +10,7 @@ use crate::utils::{OnnxAutoPad, calc_begin_and_end_pads};
 use crate::{
     instruction::{
         Dispatch, Instruction, PushConstants, Shader, VkOperation,
-        maxpool::f32_f32_cpu::f32_f32_cpu, slang,
+        maxpool::f32_f32_cpu::f32_f32_cpu, shader,
     },
     tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,
@@ -18,9 +18,9 @@ use crate::{
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static MAXPOOL_1D_SHADER: Shader = slang!("maxpool_1d.slang", 2);
-pub static MAXPOOL_2D_SHADER: Shader = slang!("maxpool_2d.slang", 2);
-pub static MAXPOOL_3D_SHADER: Shader = slang!("maxpool_3d.slang", 2);
+pub static MAXPOOL_1D_SHADER: Shader = shader!("maxpool_1d");
+pub static MAXPOOL_2D_SHADER: Shader = shader!("maxpool_2d");
+pub static MAXPOOL_3D_SHADER: Shader = shader!("maxpool_3d");
 
 pub struct MaxPoolInstruction {
     pub src: TensorId,
@@ -217,13 +217,12 @@ impl Instruction for MaxPoolInstruction {
                     _ => unreachable!(),
                 };
 
-                if !gpu.supports_dtype(dtype) || !shader.supported_types.contains(&dtype) {
+                let Some(spv) = gpu.get_spirv(shader, dtype) else {
                     return Ok(None);
-                }
+                };
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader,
-                    dtype,
+                    spv,
                     local_size,
                     work_size,
                     push_constants,

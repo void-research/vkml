@@ -8,7 +8,7 @@ use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     instruction::{
         Dispatch, Instruction, PushConstants, Shader, VkOperation,
-        add::f32_f32_f32_cpu::f32_f32_f32_cpu, slang,
+        add::f32_f32_f32_cpu::f32_f32_f32_cpu, shader,
     },
     tensor::ComputeTarget,
     tensor_graph::TensorId,
@@ -16,8 +16,8 @@ use crate::{
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static ADD_SHADER: Shader = slang!("add.slang", 3);
-pub static ADD_NOSTRIDE_SHADER: Shader = slang!("add_nostride.slang", 3);
+pub static ADD_SHADER: Shader = shader!("add");
+pub static ADD_NOSTRIDE_SHADER: Shader = shader!("add_nostride");
 
 pub struct AddInstruction {
     pub src1: TensorId,
@@ -104,9 +104,9 @@ impl Instruction for AddInstruction {
                     &ADD_SHADER
                 };
 
-                if !gpu.supports_dtype(dst_dtype) || !shader.supported_types.contains(&dst_dtype) {
+                let Some(spv) = gpu.get_spirv(shader, dst_dtype) else {
                     return Ok(None);
-                }
+                };
 
                 let num_elements = dst_desc.num_elements() as u32;
                 let local_size = gpu.workgroup_size_1d();
@@ -141,8 +141,7 @@ impl Instruction for AddInstruction {
                 };
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader,
-                    dtype: dst_dtype,
+                    spv,
                     local_size,
                     work_size: [num_elements, 1, 1],
                     push_constants,

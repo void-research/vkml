@@ -42,8 +42,7 @@ pub use sub::SubInstruction;
 pub use transfer::TransferToDeviceInstruction;
 
 pub use crate::gpu::PushConstants;
-pub use crate::slang::{Shader, slang};
-pub use crate::utils::dtype::{ARITHMETIC_TYPES, FLOAT_TYPES};
+pub use crate::shader::{Shader, shader};
 pub use dispatch::{Dispatch, VkOperation};
 
 use crate::{

@@ -7,7 +7,7 @@ use vulkanalia::{
 };
 use zero_pool::global_pool;
 
-use crate::{VKMLError, gpu::device::Gpu, slang::SlangCompiler};
+use crate::{VKMLError, gpu::device::Gpu};
 
 pub struct GpuPool {
     gpus: Vec<Arc<Gpu>>,
@@ -42,7 +42,6 @@ impl GpuPool {
             };
 
             let instance = Arc::new(entry.create_instance(&create_info, None)?);
-            let slang = Arc::new(SlangCompiler::new()?);
 
             let physical_devices = instance.enumerate_physical_devices()?;
 
@@ -77,7 +76,6 @@ impl GpuPool {
                 .map(|(i, &physical_device)| GpuInitParams {
                     instance: instance.clone(),
                     physical_device,
-                    slang: slang.clone(),
                     index: i,
                     out_ptr: gpus.as_mut_ptr(),
                 })
@@ -117,19 +115,14 @@ impl std::fmt::Debug for GpuPool {
 struct GpuInitParams {
     instance: Arc<Instance>,
     physical_device: vk::PhysicalDevice,
-    slang: Arc<SlangCompiler>,
     index: usize,
     out_ptr: *mut Arc<Gpu>,
 }
 
 fn gpu_init_task(params: &GpuInitParams) {
     let gpu = Arc::new(
-        Gpu::new(
-            params.instance.clone(),
-            params.physical_device,
-            params.slang.clone(),
-        )
-        .expect("Failed to initialise GPU"),
+        Gpu::new(params.instance.clone(), params.physical_device)
+            .expect("Failed to initialise GPU"),
     );
 
     unsafe {

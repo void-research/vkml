@@ -7,7 +7,7 @@ use crate::instruction::softmax::push_constants::SoftmaxPushConstants;
 
 use crate::{
     instruction::{
-        Dispatch, FLOAT_TYPES, Instruction, PushConstants, Shader, VkOperation, slang,
+        Dispatch, Instruction, PushConstants, Shader, VkOperation, shader,
         softmax::f32_f32_cpu::f32_f32_cpu,
     },
     tensor::ComputeTarget,
@@ -16,7 +16,7 @@ use crate::{
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static SHADER: Shader = slang!("softmax.slang", 2, FLOAT_TYPES);
+pub static SHADER: Shader = shader!("softmax", [Float, Float16]);
 
 pub struct SoftmaxInstruction {
     pub src: TensorId,
@@ -75,12 +75,13 @@ impl Instruction for SoftmaxInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                if src_desc.data_type() != dst_dtype
-                    || !gpu.supports_dtype(dst_dtype)
-                    || !SHADER.supported_types.contains(&dst_dtype)
-                {
+                if src_desc.data_type() != dst_dtype {
                     return Ok(None);
                 }
+
+                let Some(spv) = gpu.get_spirv(&SHADER, dst_dtype) else {
+                    return Ok(None);
+                };
 
                 let dims = src_desc.dims();
                 let dim = self.resolve_axis(dims.len());
@@ -96,8 +97,7 @@ impl Instruction for SoftmaxInstruction {
                 let local_size = [256, 1, 1];
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader: &SHADER,
-                    dtype: dst_dtype,
+                    spv,
                     local_size,
                     work_size: [(batch_size * local_size[0] as usize) as u32, 1, 1],
                     push_constants: PushConstants::from_struct(&push_constants),

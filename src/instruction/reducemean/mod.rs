@@ -4,7 +4,7 @@ pub mod push_constants;
 use crate::VKMLError;
 use crate::instruction::reducemean::f32_cpu::f32_cpu;
 use crate::instruction::reducemean::push_constants::ReduceMeanPushConstants;
-use crate::instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, slang};
+use crate::instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, shader};
 use crate::{
     ComputeManager,
     tensor::{ComputeTarget, TensorDesc},
@@ -13,7 +13,7 @@ use crate::{
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static SHADER: Shader = slang!("reducemean.slang", 2);
+pub static SHADER: Shader = shader!("reducemean");
 
 pub struct ReduceMeanInstruction {
     pub src: TensorId,
@@ -62,12 +62,13 @@ impl Instruction for ReduceMeanInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                if src_desc.data_type() != dst_dtype
-                    || !gpu.supports_dtype(dst_dtype)
-                    || !SHADER.supported_types.contains(&dst_dtype)
-                {
+                if src_desc.data_type() != dst_dtype {
                     return Ok(None);
                 }
+
+                let Some(spv) = gpu.get_spirv(&SHADER, dst_dtype) else {
+                    return Ok(None);
+                };
 
                 let rank = src_desc.ndim() as i64;
                 let axes_vec: Vec<i64> = if let Some(a) = &self.axes {
@@ -100,8 +101,7 @@ impl Instruction for ReduceMeanInstruction {
                 let local_size = gpu.workgroup_size_1d();
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader: &SHADER,
-                    dtype: dst_dtype,
+                    spv,
                     local_size,
                     work_size: [out_elements, 1, 1],
                     push_constants: PushConstants::from_struct(&mean_pc),

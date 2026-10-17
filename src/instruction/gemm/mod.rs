@@ -7,15 +7,15 @@ use crate::instruction::gemm::push_constants::GemmPushConstants;
 use crate::utils::broadcast_strides;
 use crate::{
     ComputeManager,
-    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, slang},
+    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, shader},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static GEMM_SHADER: Shader = slang!("gemm.slang", 4);
-pub static GEMM_TILED_SHADER: Shader = slang!("gemm_tiled.slang", 4);
+pub static GEMM_SHADER: Shader = shader!("gemm");
+pub static GEMM_TILED_SHADER: Shader = shader!("gemm_tiled");
 
 /// GEMM (General Matrix Multiplication) instruction
 /// Computes Y = alpha * op(A) * op(B) + beta * C
@@ -124,9 +124,9 @@ impl Instruction for GemmInstruction {
                     (&GEMM_SHADER, gpu.workgroup_size_2d())
                 };
 
-                if !gpu.supports_dtype(y_dtype) || !shader.supported_types.contains(&y_dtype) {
+                let Some(spv) = gpu.get_spirv(shader, y_dtype) else {
                     return Ok(None);
-                }
+                };
 
                 let a_strides = a_desc.strides();
                 let b_strides = b_desc.strides();
@@ -165,8 +165,7 @@ impl Instruction for GemmInstruction {
                 };
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader,
-                    dtype: y_dtype,
+                    spv,
                     local_size,
                     work_size: [n as u32, m as u32, 1],
                     push_constants: PushConstants::from_struct(&pc),

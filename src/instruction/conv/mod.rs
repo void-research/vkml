@@ -10,7 +10,7 @@ use crate::utils::{OnnxAutoPad, calc_begin_and_end_pads};
 use crate::{
     instruction::{
         Dispatch, Instruction, PushConstants, Shader, VkOperation,
-        conv::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu, slang,
+        conv::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu, shader,
     },
     tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,
@@ -19,9 +19,9 @@ use crate::{
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static CONV_1D_SHADER: Shader = slang!("conv_1d.slang", 4);
-pub static CONV_2D_SHADER: Shader = slang!("conv_2d.slang", 4);
-pub static CONV_3D_SHADER: Shader = slang!("conv_3d.slang", 4);
+pub static CONV_1D_SHADER: Shader = shader!("conv_1d");
+pub static CONV_2D_SHADER: Shader = shader!("conv_2d");
+pub static CONV_3D_SHADER: Shader = shader!("conv_3d");
 
 pub struct ConvInstruction {
     pub src: TensorId,
@@ -270,13 +270,12 @@ impl Instruction for ConvInstruction {
                     _ => unreachable!(),
                 };
 
-                if !gpu.supports_dtype(dtype) || !shader.supported_types.contains(&dtype) {
+                let Some(spv) = gpu.get_spirv(shader, dtype) else {
                     return Ok(None);
-                }
+                };
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader,
-                    dtype,
+                    spv,
                     local_size,
                     work_size,
                     push_constants,

@@ -1,7 +1,5 @@
 use crate::gpu::PushConstants;
-use crate::slang::Shader;
 use crate::tensor_graph::TensorId;
-use onnx_extractor::DataType;
 
 pub enum Dispatch {
     Gpu(VkOperation),
@@ -10,8 +8,7 @@ pub enum Dispatch {
 
 pub enum VkOperation {
     Compute {
-        shader: &'static Shader,
-        dtype: DataType,
+        spv: &'static [u8],
         local_size: [u32; 3],
         work_size: [u32; 3],
         push_constants: PushConstants,
@@ -19,8 +16,7 @@ pub enum VkOperation {
     },
     ClearAndCompute {
         clear_dst: TensorId,
-        shader: &'static Shader,
-        dtype: DataType,
+        spv: &'static [u8],
         local_size: [u32; 3],
         work_size: [u32; 3],
         push_constants: PushConstants,

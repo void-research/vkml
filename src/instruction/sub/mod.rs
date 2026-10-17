@@ -7,7 +7,7 @@ use crate::instruction::sub::push_constants::SubPushConstants;
 use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     instruction::{
-        Dispatch, Instruction, PushConstants, Shader, VkOperation, slang,
+        Dispatch, Instruction, PushConstants, Shader, VkOperation, shader,
         sub::f32_f32_f32_cpu::f32_f32_f32_cpu,
     },
     tensor::ComputeTarget,
@@ -16,7 +16,7 @@ use crate::{
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static SHADER: Shader = slang!("sub.slang", 3);
+pub static SHADER: Shader = shader!("sub");
 
 pub struct SubInstruction {
     pub src1: TensorId,
@@ -87,13 +87,13 @@ impl Instruction for SubInstruction {
 
         match target {
             ComputeTarget::Gpu(gpu) => {
-                if src1_desc.data_type() != dst_dtype
-                    || src2_desc.data_type() != dst_dtype
-                    || !gpu.supports_dtype(dst_dtype)
-                    || !SHADER.supported_types.contains(&dst_dtype)
-                {
+                if src1_desc.data_type() != dst_dtype || src2_desc.data_type() != dst_dtype {
                     return Ok(None);
                 }
+
+                let Some(spv) = gpu.get_spirv(&SHADER, dst_dtype) else {
+                    return Ok(None);
+                };
 
                 let rank = dst_dims.len() as u32;
 
@@ -129,8 +129,7 @@ impl Instruction for SubInstruction {
                 let local_size = gpu.workgroup_size_1d();
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader: &SHADER,
-                    dtype: dst_dtype,
+                    spv,
                     local_size,
                     work_size: [num_elements, 1, 1],
                     push_constants: PushConstants::from_struct(&push_const_values),

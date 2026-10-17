@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     ffi::{CStr, c_void},
     ptr,
-    sync::{Arc, Mutex, OnceLock, RwLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 use vulkanalia::{
     Device, Instance,
@@ -11,15 +11,21 @@ use vulkanalia::{
 };
 
 use crate::{
-    compute::memory_tracker::MemoryTracker,
-    gpu::{VkExtensions, device::allocator::StagingResources},
-    slang::SlangCompiler,
+    compute::memory_tracker::MemoryTracker, gpu::VkExtensions, shader::Shader,
     utils::error::VKMLError,
 };
 
-pub mod allocator;
-pub mod pipeline;
-pub mod workgroup;
+mod allocator;
+mod pipeline;
+mod workgroup;
+
+use allocator::StagingResources;
+
+// if ever needed, vk 1.4 does give us 256 as the new guarenteed minimum
+pub const MAX_PUSH_CONSTANT_BYTES: usize = 128;
+
+// currently no shader uses more than 4
+const MAX_STORAGE_BUFFERS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostAccessMode {
@@ -48,20 +54,18 @@ pub struct Gpu {
     staging_resources: OnceLock<Mutex<StagingResources>>,
 
     // Drop order matters: fields drop top-to-bottom
-    pipelines_slang: RwLock<HashMap<(&'static CStr, DataType, [u32; 3]), vk::Pipeline>>,
-    descriptor_set_layouts: Box<[OnceLock<vk::DescriptorSetLayout>]>,
-    pipeline_layouts: Box<[OnceLock<vk::PipelineLayout>]>,
+    pipelines: Mutex<HashMap<(usize, [u32; 3]), vk::Pipeline>>,
+    pipeline_layout: vk::PipelineLayout,
+    descriptor_set_layout: vk::DescriptorSetLayout,
     command_pool: vk::CommandPool,
     device: Arc<Device>,
     instance: Arc<Instance>,
-    slang: Arc<SlangCompiler>,
 }
 
 impl Gpu {
     pub fn new(
         instance: Arc<Instance>,
         physical_device: vk::PhysicalDevice,
-        slang: Arc<SlangCompiler>,
     ) -> Result<Self, VKMLError> {
         unsafe {
             let queue_families =
@@ -176,11 +180,50 @@ impl Gpu {
             instance.get_physical_device_memory_properties2(physical_device, &mut memory_props2);
             let memory_properties = memory_props2.memory_properties;
 
-            // caches for descriptor set layouts and pipeline layouts indexed by binding count
-            // uses max_push_descriptors as a reasonable upper bound
-            let max_bindings = push_props.max_push_descriptors as usize;
-            let descriptor_set_layouts = (0..=max_bindings).map(|_| OnceLock::new()).collect();
-            let pipeline_layouts = (0..=max_bindings).map(|_| OnceLock::new()).collect();
+            // single descriptor set layout with MAX_STORAGE_BUFFERS storage buffer bindings
+            if push_props.max_push_descriptors < MAX_STORAGE_BUFFERS as u32 {
+                return Err(VKMLError::Gpu(format!(
+                    "Device {} supports {} push descriptors, but {} are required",
+                    device_name, push_props.max_push_descriptors, MAX_STORAGE_BUFFERS
+                )));
+            }
+            let bindings: [vk::DescriptorSetLayoutBinding; MAX_STORAGE_BUFFERS] =
+                std::array::from_fn(|i| vk::DescriptorSetLayoutBinding {
+                    binding: i as u32,
+                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                    descriptor_count: 1,
+                    stage_flags: vk::ShaderStageFlags::COMPUTE,
+                    immutable_samplers: ptr::null(),
+                });
+
+            let descriptor_layout_info = vk::DescriptorSetLayoutCreateInfo {
+                s_type: vk::StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                next: ptr::null(),
+                flags: vk::DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR,
+                binding_count: bindings.len() as u32,
+                bindings: bindings.as_ptr(),
+            };
+
+            let descriptor_set_layout =
+                device.create_descriptor_set_layout(&descriptor_layout_info, None)?;
+
+            let push_constant_range = vk::PushConstantRange {
+                stage_flags: vk::ShaderStageFlags::COMPUTE,
+                offset: 0,
+                size: MAX_PUSH_CONSTANT_BYTES as u32,
+            };
+
+            let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
+                s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
+                next: std::ptr::null(),
+                flags: vk::PipelineLayoutCreateFlags::empty(),
+                set_layout_count: 1,
+                set_layouts: &descriptor_set_layout,
+                push_constant_range_count: 1,
+                push_constant_ranges: &push_constant_range,
+            };
+
+            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
 
             let target_props = vk::MemoryPropertyFlags::DEVICE_LOCAL
                 | vk::MemoryPropertyFlags::HOST_VISIBLE
@@ -250,13 +293,12 @@ impl Gpu {
                 host_access_mode,
                 staging_resources: OnceLock::new(),
 
-                pipelines_slang: RwLock::new(HashMap::new()),
-                descriptor_set_layouts,
-                pipeline_layouts,
+                pipelines: Mutex::new(HashMap::new()),
+                pipeline_layout,
+                descriptor_set_layout,
                 command_pool,
                 device,
                 instance,
-                slang,
             })
         }
     }
@@ -319,10 +361,6 @@ impl Gpu {
             .contains(vk::SubgroupFeatureFlags::ARITHMETIC)
     }
 
-    pub fn get_physical_device(&self) -> vk::PhysicalDevice {
-        self.physical_device
-    }
-
     pub fn extensions(&self) -> &VkExtensions {
         &self.extensions
     }
@@ -354,6 +392,18 @@ impl Gpu {
             | DataType::String
             | DataType::Undefined => false,
         }
+    }
+
+    pub fn get_spirv(&self, shader: &Shader, dtype: DataType) -> Option<&'static [u8]> {
+        if !self.supports_dtype(dtype) {
+            return None;
+        }
+
+        shader
+            .variants
+            .iter()
+            .find(|v| v.dtype == dtype)
+            .map(|v| v.spv)
     }
 
     /// for reusable command buffers, pass `vk::CommandBufferUsageFlags::empty()`
@@ -466,22 +516,16 @@ impl Drop for Gpu {
 
             self.device.destroy_command_pool(self.command_pool, None);
 
-            if let Ok(pipelines) = self.pipelines_slang.read() {
+            if let Ok(pipelines) = self.pipelines.lock() {
                 for &pipeline in pipelines.values() {
                     self.device.destroy_pipeline(pipeline, None);
                 }
             }
 
-            for cell in self.descriptor_set_layouts.iter() {
-                if let Some(&dsl) = cell.get() {
-                    self.device.destroy_descriptor_set_layout(dsl, None);
-                }
-            }
-            for cell in self.pipeline_layouts.iter() {
-                if let Some(&pl) = cell.get() {
-                    self.device.destroy_pipeline_layout(pl, None);
-                }
-            }
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
         }
     }
 }

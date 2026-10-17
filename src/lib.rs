@@ -5,7 +5,7 @@
 
 mod utils;
 
-mod slang;
+mod shader;
 
 pub mod gpu;
 

@@ -10,29 +10,21 @@ use crate::instruction::matmul::push_constants::{
 };
 use crate::{
     ComputeManager,
-    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, slang},
+    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, shader},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };
 use onnx_extractor::DataType;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
-pub static MATMUL_1D2D: Shader = slang!("matmul_1d2d.slang", 3);
-pub static MATMUL_1D2D_ATOMIC: Shader = slang!(
-    "matmul_1d2d_atomic.slang",
-    3,
-    &[DataType::Float, DataType::Float16, DataType::Double]
-);
-pub static MATMUL_2D1D: Shader = slang!("matmul_2d1d.slang", 3);
-pub static MATMUL_2D1D_ATOMIC: Shader = slang!(
-    "matmul_2d1d_atomic.slang",
-    3,
-    &[DataType::Float, DataType::Float16, DataType::Double]
-);
-pub static MATMUL_2D2D: Shader = slang!("matmul_2d2d.slang", 3);
-pub static MATMUL_3D1D: Shader = slang!("matmul_3d1d.slang", 3);
-pub static MATMUL_1D3D: Shader = slang!("matmul_1d3d.slang", 3);
-pub static MATMUL_TILED: Shader = slang!("matmul_tiled.slang", 3);
+pub static MATMUL_1D2D: Shader = shader!("matmul_1d2d");
+pub static MATMUL_1D2D_ATOMIC: Shader = shader!("matmul_1d2d_atomic", [Float, Float16]);
+pub static MATMUL_2D1D: Shader = shader!("matmul_2d1d");
+pub static MATMUL_2D1D_ATOMIC: Shader = shader!("matmul_2d1d_atomic", [Float, Float16]);
+pub static MATMUL_2D2D: Shader = shader!("matmul_2d2d");
+pub static MATMUL_3D1D: Shader = shader!("matmul_3d1d");
+pub static MATMUL_1D3D: Shader = shader!("matmul_1d3d");
+pub static MATMUL_TILED: Shader = shader!("matmul_tiled");
 
 #[derive(PartialEq)]
 pub enum MatMulVariant {
@@ -164,11 +156,9 @@ impl Instruction for MatMulInstruction {
                     }
                 }
 
-                if !gpu.supports_dtype(dst_dtype)
-                    || !op.shader().supported_types.contains(&dst_dtype)
-                {
+                let Some(spv) = gpu.get_spirv(op.shader(), dst_dtype) else {
                     return Ok(None);
-                }
+                };
 
                 let src1_dims = src1_desc.dims();
                 let src2_dims = src2_desc.dims();
@@ -193,6 +183,11 @@ impl Instruction for MatMulInstruction {
                             && n <= gpu.subgroup_size() as i64
                             && k >= min_k
                         {
+                            let Some(atomic_spv) = gpu.get_spirv(&MATMUL_1D2D_ATOMIC, dst_dtype)
+                            else {
+                                return Ok(None);
+                            };
+
                             let pc = MatMul1D2DAtomicPushConstants {
                                 k: k as u32,
                                 n: n as u32,
@@ -208,8 +203,7 @@ impl Instruction for MatMulInstruction {
 
                             return Ok(Some(Dispatch::Gpu(VkOperation::ClearAndCompute {
                                 clear_dst: self.dst,
-                                shader: &MATMUL_1D2D_ATOMIC,
-                                dtype: dst_dtype,
+                                spv: atomic_spv,
                                 local_size: local,
                                 work_size: work,
                                 push_constants: PushConstants::from_struct(&pc),
@@ -249,6 +243,11 @@ impl Instruction for MatMulInstruction {
                             && m <= gpu.subgroup_size() as i64
                             && k >= min_k
                         {
+                            let Some(atomic_spv) = gpu.get_spirv(&MATMUL_2D1D_ATOMIC, dst_dtype)
+                            else {
+                                return Ok(None);
+                            };
+
                             let pc = MatMul2D1DAtomicPushConstants {
                                 m: m as u32,
                                 k: k as u32,
@@ -264,8 +263,7 @@ impl Instruction for MatMulInstruction {
 
                             return Ok(Some(Dispatch::Gpu(VkOperation::ClearAndCompute {
                                 clear_dst: self.dst,
-                                shader: &MATMUL_2D1D_ATOMIC,
-                                dtype: dst_dtype,
+                                spv: atomic_spv,
                                 local_size: local,
                                 work_size: work,
                                 push_constants: PushConstants::from_struct(&pc),
@@ -507,8 +505,7 @@ impl Instruction for MatMulInstruction {
                 };
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
-                    shader: op.shader(),
-                    dtype: dst_dtype,
+                    spv,
                     local_size,
                     work_size,
                     push_constants,
