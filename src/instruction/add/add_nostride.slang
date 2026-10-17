@@ -5,14 +5,18 @@ const int WORKGROUP_SIZE_Y = 1;
 [vk::constant_id(2)]
 const int WORKGROUP_SIZE_Z = 1;
 
+struct PushConstants<T> {
+    ImmutablePtr<T> src1;
+    ImmutablePtr<T> src2;
+    Ptr<T> dst;
+}
+
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic>(
-    StructuredBuffer<T> src1,
-    StructuredBuffer<T> src2,
-    RWStructuredBuffer<T> dst,
+    uniform PushConstants<T> pc,
     uint3 threadId: SV_DispatchThreadID)
 {
     uint gid = threadId.x;
-    dst[gid] = src1[gid] + src2[gid];
+    pc.dst[gid] = pc.src1[gid] + pc.src2[gid];
 }

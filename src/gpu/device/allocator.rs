@@ -2,7 +2,7 @@ use std::{
     cmp,
     sync::{Arc, Mutex},
 };
-use vulkanalia::vk::{self, DeviceV1_0, InstanceV1_0};
+use vulkanalia::vk::{self, DeviceV1_0, DeviceV1_2, InstanceV1_0};
 
 use crate::{
     gpu::{Gpu, HostAccessMode, memory::GpuMemory},
@@ -31,7 +31,8 @@ impl Gpu {
                 size: size_in_bytes,
                 usage: vk::BufferUsageFlags::STORAGE_BUFFER
                     | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
+                    | vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 sharing_mode: vk::SharingMode::EXCLUSIVE,
                 queue_family_index_count: 0,
                 queue_family_indices: std::ptr::null(),
@@ -52,9 +53,16 @@ impl Gpu {
             let memory_type =
                 self.find_memory_type(mem_requirements.memory_type_bits, properties)?;
 
+            let mut alloc_flags_info = vk::MemoryAllocateFlagsInfo {
+                s_type: vk::StructureType::MEMORY_ALLOCATE_FLAGS_INFO,
+                next: std::ptr::null(),
+                flags: vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+                device_mask: 0,
+            };
+
             let alloc_info = vk::MemoryAllocateInfo {
                 s_type: vk::StructureType::MEMORY_ALLOCATE_INFO,
-                next: std::ptr::null(),
+                next: &mut alloc_flags_info as *mut _ as *mut std::ffi::c_void,
                 allocation_size: mem_requirements.size,
                 memory_type_index: memory_type,
             };
@@ -62,11 +70,19 @@ impl Gpu {
             let memory = self.device.allocate_memory(&alloc_info, None)?;
             self.device.bind_buffer_memory(buffer, memory, 0)?;
 
+            let addr_info = vk::BufferDeviceAddressInfo {
+                s_type: vk::StructureType::BUFFER_DEVICE_ADDRESS_INFO,
+                next: std::ptr::null(),
+                buffer,
+            };
+            let device_address = self.device.get_buffer_device_address(&addr_info);
+
             Ok(GpuMemory::new(
                 buffer,
                 memory,
                 size_in_bytes,
                 properties,
+                device_address,
                 self,
             ))
         }

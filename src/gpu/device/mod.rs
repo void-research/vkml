@@ -25,9 +25,6 @@ use allocator::StagingResources;
 // if ever needed, vk 1.4 does give us 256 as the new guarenteed minimum
 pub const MAX_PUSH_CONSTANT_BYTES: usize = 128;
 
-// currently no shader uses more than 4
-const MAX_STORAGE_BUFFERS: usize = 4;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostAccessMode {
     /// Tensors remain device local and host access occurs through staging.
@@ -57,7 +54,6 @@ pub struct Gpu {
     // Drop order matters: fields drop top-to-bottom
     pipelines: Mutex<HashMap<(usize, [u32; 3]), vk::Pipeline>>,
     pipeline_layout: vk::PipelineLayout,
-    descriptor_set_layout: vk::DescriptorSetLayout,
     command_pool: vk::CommandPool,
     device: Arc<Device>,
     instance: Arc<Instance>,
@@ -97,9 +93,7 @@ impl Gpu {
                 queue_priorities: &1.0f32,
             };
 
-            let device_features = vk::PhysicalDeviceFeatures::default();
-
-            // Prepare extension name pointers and p_next feature chain.
+            // Prepare extension name pointers, features, and p_next feature chain.
             // Keep extras alive until after device creation so the pointer arrays and structs remain valid.
             let extras = vk_extensions.prepare_device_create();
 
@@ -115,7 +109,7 @@ impl Gpu {
                 enabled_layer_names: std::ptr::null(),
                 enabled_extension_count: extras.name_ptrs.len() as u32,
                 enabled_extension_names: extras.name_ptrs.as_ptr(),
-                enabled_features: &device_features,
+                enabled_features: &extras.features,
             };
 
             let device =
@@ -181,33 +175,6 @@ impl Gpu {
             instance.get_physical_device_memory_properties2(physical_device, &mut memory_props2);
             let memory_properties = memory_props2.memory_properties;
 
-            // single descriptor set layout with MAX_STORAGE_BUFFERS storage buffer bindings
-            if push_props.max_push_descriptors < MAX_STORAGE_BUFFERS as u32 {
-                return Err(VKMLError::Gpu(format!(
-                    "Device {} supports {} push descriptors, but {} are required",
-                    device_name, push_props.max_push_descriptors, MAX_STORAGE_BUFFERS
-                )));
-            }
-            let bindings: [vk::DescriptorSetLayoutBinding; MAX_STORAGE_BUFFERS] =
-                std::array::from_fn(|i| vk::DescriptorSetLayoutBinding {
-                    binding: i as u32,
-                    descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                    descriptor_count: 1,
-                    stage_flags: vk::ShaderStageFlags::COMPUTE,
-                    immutable_samplers: ptr::null(),
-                });
-
-            let descriptor_layout_info = vk::DescriptorSetLayoutCreateInfo {
-                s_type: vk::StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                next: ptr::null(),
-                flags: vk::DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR,
-                binding_count: bindings.len() as u32,
-                bindings: bindings.as_ptr(),
-            };
-
-            let descriptor_set_layout =
-                device.create_descriptor_set_layout(&descriptor_layout_info, None)?;
-
             let push_constant_range = vk::PushConstantRange {
                 stage_flags: vk::ShaderStageFlags::COMPUTE,
                 offset: 0,
@@ -218,8 +185,8 @@ impl Gpu {
                 s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
                 next: std::ptr::null(),
                 flags: vk::PipelineLayoutCreateFlags::empty(),
-                set_layout_count: 1,
-                set_layouts: &descriptor_set_layout,
+                set_layout_count: 0,
+                set_layouts: ptr::null(),
                 push_constant_range_count: 1,
                 push_constant_ranges: &push_constant_range,
             };
@@ -296,7 +263,6 @@ impl Gpu {
 
                 pipelines: Mutex::new(HashMap::new()),
                 pipeline_layout,
-                descriptor_set_layout,
                 command_pool,
                 device,
                 instance,
@@ -525,8 +491,6 @@ impl Drop for Gpu {
 
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
-            self.device
-                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
         }
     }
 }

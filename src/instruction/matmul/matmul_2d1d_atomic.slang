@@ -5,8 +5,10 @@ const int WORKGROUP_SIZE_Y = 1;
 [vk::constant_id(2)]
 const int WORKGROUP_SIZE_Z = 1;
 
-struct PushConstants
-{
+struct PushConstants<T> {
+    ImmutablePtr<T> src1;
+    ImmutablePtr<T> src2;
+    Ptr<T> dst;
     uint m;
     uint k;
     uint num_slices;
@@ -16,17 +18,14 @@ struct PushConstants
     uint stride_c;
 };
 
-[[vk::push_constant]]
-PushConstants pc;
-
 interface IAtomicAdd
 {
-    static void add(RWStructuredBuffer<This> buf, uint index, This val);
+    static void add(Ptr<This> buf, uint index, This val);
 };
 
 extension float : IAtomicAdd
 {
-    static void add(RWStructuredBuffer<float> buf, uint index, float val)
+    static void add(Ptr<float> buf, uint index, float val)
     {
         InterlockedAdd(buf[index], val);
     }
@@ -34,7 +33,7 @@ extension float : IAtomicAdd
 
 extension half : IAtomicAdd
 {
-    static void add(RWStructuredBuffer<half> buf, uint index, half val)
+    static void add(Ptr<half> buf, uint index, half val)
     {
         InterlockedAdd(buf[index], val);
     }
@@ -42,7 +41,7 @@ extension half : IAtomicAdd
 
 extension double : IAtomicAdd
 {
-    static void add(RWStructuredBuffer<double> buf, uint index, double val)
+    static void add(Ptr<double> buf, uint index, double val)
     {
         InterlockedAdd(buf[index], val);
     }
@@ -51,9 +50,7 @@ extension double : IAtomicAdd
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic & IAtomicAdd>(
-    StructuredBuffer<T> src1,
-    StructuredBuffer<T> src2,
-    RWStructuredBuffer<T> dst,
+    uniform PushConstants<T> pc,
     uint3 groupId: SV_GroupID,
     uint3 threadId: SV_GroupThreadID)
 {
@@ -71,7 +68,7 @@ void main<T : IArithmetic & IAtomicAdd>(
     {
         for (uint i = k_start + tid; i < k_end; i += WORKGROUP_SIZE_Y)
         {
-            sum = sum + src1[row * pc.stride_a0 + i * pc.stride_a1] * src2[i * pc.stride_b];
+            sum = sum + pc.src1[row * pc.stride_a0 + i * pc.stride_a1] * pc.src2[i * pc.stride_b];
         }
     }
 
@@ -93,12 +90,11 @@ void main<T : IArithmetic & IAtomicAdd>(
 
         if (tid == 0 && row < pc.m)
         {
-            T.add(dst, row * pc.stride_c, sdata[shmem_idx]);
+            T.add(pc.dst, row * pc.stride_c, sdata[shmem_idx]);
         }
     }
     else if (row < pc.m)
     {
-        T.add(dst, row * pc.stride_c, sum);
+        T.add(pc.dst, row * pc.stride_c, sum);
     }
 }
-

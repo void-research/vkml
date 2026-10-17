@@ -11,6 +11,7 @@ pub struct GpuMemory {
     pub memory: vk::DeviceMemory,
     pub size: vk::DeviceSize,
     pub properties: vk::MemoryPropertyFlags,
+    pub device_address: vk::DeviceAddress,
     gpu: Arc<Gpu>,
 }
 
@@ -20,6 +21,7 @@ impl GpuMemory {
         memory: vk::DeviceMemory,
         size: vk::DeviceSize,
         properties: vk::MemoryPropertyFlags,
+        device_address: vk::DeviceAddress,
         gpu: &Arc<Gpu>,
     ) -> Self {
         gpu.memory_allocate_usage(size);
@@ -28,6 +30,7 @@ impl GpuMemory {
             memory,
             size,
             properties,
+            device_address,
             gpu: Arc::clone(gpu),
         }
     }

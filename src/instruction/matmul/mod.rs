@@ -1,14 +1,8 @@
 mod f32_f32_f32_cpu;
-mod push_constants;
 
 use crate::VKMLError;
 use crate::gpu::shader::{Shader, shader};
 use crate::instruction::matmul::f32_f32_f32_cpu::f32_f32_f32_cpu;
-use crate::instruction::matmul::push_constants::{
-    MatMul1D2DAtomicPushConstants, MatMul1D2DPushConstants, MatMul1D3DPushConstants,
-    MatMul2D1DAtomicPushConstants, MatMul2D1DPushConstants, MatMul2D2DPushConstants,
-    MatMul3D1DPushConstants, MatMulTiledPushConstants,
-};
 use crate::{
     ComputeManager,
     instruction::{Dispatch, Instruction, PushConstants, VkOperation},
@@ -189,15 +183,17 @@ impl Instruction for MatMulInstruction {
                                 return Ok(None);
                             };
 
-                            let pc = MatMul1D2DAtomicPushConstants {
-                                k: k as u32,
-                                n: n as u32,
-                                num_slices,
-                                stride_a: *src1_strides.last().unwrap() as u32,
-                                stride_b0: src2_strides[0] as u32,
-                                stride_b1: src2_strides[1] as u32,
-                                stride_c: *dst_strides.last().unwrap() as u32,
-                            };
+                            let pc = PushConstants::new()
+                                .buffer(self.src1)
+                                .buffer(self.src2)
+                                .buffer(self.dst)
+                                .push(k as u32)
+                                .push(n as u32)
+                                .push(num_slices)
+                                .push(*src1_strides.last().unwrap() as u32)
+                                .push(src2_strides[0] as u32)
+                                .push(src2_strides[1] as u32)
+                                .push(*dst_strides.last().unwrap() as u32);
 
                             let local = [1, local_y, 1];
                             let work = [n as u32, num_slices * local_y, 1];
@@ -207,27 +203,24 @@ impl Instruction for MatMulInstruction {
                                 spv: atomic_spv,
                                 local_size: local,
                                 work_size: work,
-                                push_constants: PushConstants::from_struct(&pc),
-                                storage_buffers: Box::new([
-                                    Some(self.src1),
-                                    Some(self.src2),
-                                    Some(self.dst),
-                                ]),
+                                push_constants: pc,
                             })));
                         }
 
-                        let pc = MatMul1D2DPushConstants {
-                            k: k as u32,
-                            n: n as u32,
-                            stride_a: *src1_strides.last().unwrap() as u32,
-                            stride_b0: src2_strides[0] as u32,
-                            stride_b1: src2_strides[1] as u32,
-                            stride_c: *dst_strides.last().unwrap() as u32,
-                        };
+                        let pc = PushConstants::new()
+                            .buffer(self.src1)
+                            .buffer(self.src2)
+                            .buffer(self.dst)
+                            .push(k as u32)
+                            .push(n as u32)
+                            .push(*src1_strides.last().unwrap() as u32)
+                            .push(src2_strides[0] as u32)
+                            .push(src2_strides[1] as u32)
+                            .push(*dst_strides.last().unwrap() as u32);
 
                         let local = gpu.workgroup_size_gemv(n as u32);
                         let work = [n as u32, local[1], 1];
-                        (local, PushConstants::from_struct(&pc), work)
+                        (local, pc, work)
                     }
                     MatMulVariant::D2D1 => {
                         let m = src1_dims[0];
@@ -249,15 +242,17 @@ impl Instruction for MatMulInstruction {
                                 return Ok(None);
                             };
 
-                            let pc = MatMul2D1DAtomicPushConstants {
-                                m: m as u32,
-                                k: k as u32,
-                                num_slices,
-                                stride_a0: src1_strides[0] as u32,
-                                stride_a1: src1_strides[1] as u32,
-                                stride_b: *src2_strides.last().unwrap() as u32,
-                                stride_c: *dst_strides.last().unwrap() as u32,
-                            };
+                            let pc = PushConstants::new()
+                                .buffer(self.src1)
+                                .buffer(self.src2)
+                                .buffer(self.dst)
+                                .push(m as u32)
+                                .push(k as u32)
+                                .push(num_slices)
+                                .push(src1_strides[0] as u32)
+                                .push(src1_strides[1] as u32)
+                                .push(*src2_strides.last().unwrap() as u32)
+                                .push(*dst_strides.last().unwrap() as u32);
 
                             let local = [1, local_y, 1];
                             let work = [m as u32, num_slices * local_y, 1];
@@ -267,50 +262,45 @@ impl Instruction for MatMulInstruction {
                                 spv: atomic_spv,
                                 local_size: local,
                                 work_size: work,
-                                push_constants: PushConstants::from_struct(&pc),
-                                storage_buffers: Box::new([
-                                    Some(self.src1),
-                                    Some(self.src2),
-                                    Some(self.dst),
-                                ]),
+                                push_constants: pc,
                             })));
                         }
 
-                        let pc = MatMul2D1DPushConstants {
-                            m: m as u32,
-                            k: k as u32,
-                            stride_a0: src1_strides[0] as u32,
-                            stride_a1: src1_strides[1] as u32,
-                            stride_b: *src2_strides.last().unwrap() as u32,
-                            stride_c: *dst_strides.last().unwrap() as u32,
-                        };
+                        let pc = PushConstants::new()
+                            .buffer(self.src1)
+                            .buffer(self.src2)
+                            .buffer(self.dst)
+                            .push(m as u32)
+                            .push(k as u32)
+                            .push(src1_strides[0] as u32)
+                            .push(src1_strides[1] as u32)
+                            .push(*src2_strides.last().unwrap() as u32)
+                            .push(*dst_strides.last().unwrap() as u32);
 
                         let local = gpu.workgroup_size_gemv(m as u32);
                         let work = [m as u32, local[1], 1];
-                        (local, PushConstants::from_struct(&pc), work)
+                        (local, pc, work)
                     }
                     MatMulVariant::D2D2 => {
                         let m = src1_dims[0];
                         let k = src1_dims[1];
                         let n = src2_dims[1];
 
-                        let pc = MatMul2D2DPushConstants {
-                            m: m as u32,
-                            k: k as u32,
-                            n: n as u32,
-                            stride_a0: src1_strides[0] as u32,
-                            stride_a1: src1_strides[1] as u32,
-                            stride_b0: src2_strides[0] as u32,
-                            stride_b1: src2_strides[1] as u32,
-                            stride_c0: dst_strides[0] as u32,
-                            stride_c1: dst_strides[1] as u32,
-                        };
+                        let pc = PushConstants::new()
+                            .buffer(self.src1)
+                            .buffer(self.src2)
+                            .buffer(self.dst)
+                            .push(m as u32)
+                            .push(k as u32)
+                            .push(n as u32)
+                            .push(src1_strides[0] as u32)
+                            .push(src1_strides[1] as u32)
+                            .push(src2_strides[0] as u32)
+                            .push(src2_strides[1] as u32)
+                            .push(dst_strides[0] as u32)
+                            .push(dst_strides[1] as u32);
 
-                        (
-                            gpu.workgroup_size_2d(),
-                            PushConstants::from_struct(&pc),
-                            [n as u32, m as u32, 1],
-                        )
+                        (gpu.workgroup_size_2d(), pc, [n as u32, m as u32, 1])
                     }
                     MatMulVariant::Tiled => {
                         let a_rank = src1_dims.len();
@@ -434,30 +424,28 @@ impl Instruction for MatMulInstruction {
                             }
                         };
 
-                        let pc = MatMulTiledPushConstants {
-                            batch,
-                            m,
-                            k,
-                            n,
-                            stride_a_batch,
-                            stride_a0,
-                            stride_a1,
-                            stride_b_batch,
-                            stride_b0,
-                            stride_b1,
-                            stride_c_batch,
-                            stride_c0,
-                            stride_c1,
-                        };
-
                         let bytes_per_thread = 2 * dst_dtype.size_in_bytes().unwrap_or(4);
                         let tile_dim = gpu.optimal_tiled_matrix_size(m, n, bytes_per_thread);
 
-                        (
-                            [tile_dim, tile_dim, 1],
-                            PushConstants::from_struct(&pc),
-                            [n, m, batch],
-                        )
+                        let pc = PushConstants::new()
+                            .buffer(self.src1)
+                            .buffer(self.src2)
+                            .buffer(self.dst)
+                            .push(batch)
+                            .push(m)
+                            .push(k)
+                            .push(n)
+                            .push(stride_a_batch)
+                            .push(stride_a0)
+                            .push(stride_a1)
+                            .push(stride_b_batch)
+                            .push(stride_b0)
+                            .push(stride_b1)
+                            .push(stride_c_batch)
+                            .push(stride_c0)
+                            .push(stride_c1);
+
+                        ([tile_dim, tile_dim, 1], pc, [n, m, batch])
                     }
                     MatMulVariant::D3D1 => {
                         let batch = src1_dims[0];
@@ -465,21 +453,23 @@ impl Instruction for MatMulInstruction {
                         let k = src1_dims[2];
                         let total = (batch * m) as u32;
 
-                        let pc = MatMul3D1DPushConstants {
-                            batch: batch as u32,
-                            m: m as u32,
-                            k: k as u32,
-                            total,
-                            stride_a0: src1_strides[0] as u32,
-                            stride_a1: src1_strides[1] as u32,
-                            stride_a2: src1_strides[2] as u32,
-                            stride_b: src2_strides[0] as u32,
-                            stride_c0: dst_strides[0] as u32,
-                            stride_c1: dst_strides[1] as u32,
-                        };
+                        let pc = PushConstants::new()
+                            .buffer(self.src1)
+                            .buffer(self.src2)
+                            .buffer(self.dst)
+                            .push(batch as u32)
+                            .push(m as u32)
+                            .push(k as u32)
+                            .push(total)
+                            .push(src1_strides[0] as u32)
+                            .push(src1_strides[1] as u32)
+                            .push(src1_strides[2] as u32)
+                            .push(src2_strides[0] as u32)
+                            .push(dst_strides[0] as u32)
+                            .push(dst_strides[1] as u32);
 
                         let local_size = gpu.workgroup_size_1d();
-                        (local_size, PushConstants::from_struct(&pc), [total, 1, 1])
+                        (local_size, pc, [total, 1, 1])
                     }
                     MatMulVariant::D1D3 => {
                         let k = src1_dims[0];
@@ -487,21 +477,23 @@ impl Instruction for MatMulInstruction {
                         let n = src2_dims[2];
                         let total = (batch * n) as u32;
 
-                        let pc = MatMul1D3DPushConstants {
-                            batch: batch as u32,
-                            k: k as u32,
-                            n: n as u32,
-                            total,
-                            stride_a: src1_strides[0] as u32,
-                            stride_b0: src2_strides[0] as u32,
-                            stride_b1: src2_strides[1] as u32,
-                            stride_b2: src2_strides[2] as u32,
-                            stride_c0: dst_strides[0] as u32,
-                            stride_c1: dst_strides[1] as u32,
-                        };
+                        let pc = PushConstants::new()
+                            .buffer(self.src1)
+                            .buffer(self.src2)
+                            .buffer(self.dst)
+                            .push(batch as u32)
+                            .push(k as u32)
+                            .push(n as u32)
+                            .push(total)
+                            .push(src1_strides[0] as u32)
+                            .push(src2_strides[0] as u32)
+                            .push(src2_strides[1] as u32)
+                            .push(src2_strides[2] as u32)
+                            .push(dst_strides[0] as u32)
+                            .push(dst_strides[1] as u32);
 
                         let local_size = gpu.workgroup_size_1d();
-                        (local_size, PushConstants::from_struct(&pc), [total, 1, 1])
+                        (local_size, pc, [total, 1, 1])
                     }
                 };
 
@@ -510,7 +502,6 @@ impl Instruction for MatMulInstruction {
                     local_size,
                     work_size,
                     push_constants,
-                    storage_buffers: Box::new([Some(self.src1), Some(self.src2), Some(self.dst)]),
                 })))
             }
         }

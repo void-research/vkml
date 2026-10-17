@@ -5,8 +5,11 @@ const int WORKGROUP_SIZE_Y = 1;
 [vk::constant_id(2)]
 const int WORKGROUP_SIZE_Z = 1;
 
-struct PushConstants
-{
+struct PushConstants<T> {
+    ImmutablePtr<T> a;
+    ImmutablePtr<T> b;
+    ImmutablePtr<T> c;
+    Ptr<T> y;
     uint m;
     uint k;
     uint n;
@@ -24,9 +27,6 @@ struct PushConstants
     float beta;
     uint has_c;
 }
-
-[[vk::push_constant]]
-PushConstants pc;
 
 interface IGemmScalar
 {
@@ -48,10 +48,7 @@ extension uint64_t : IGemmScalar { static uint64_t scale(uint64_t val, float s) 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic & IGemmScalar>(
-    StructuredBuffer<T> a,
-    StructuredBuffer<T> b,
-    StructuredBuffer<T> c,
-    RWStructuredBuffer<T> y,
+    uniform PushConstants<T> pc,
     uint3 groupId: SV_GroupID,
     uint3 threadId: SV_GroupThreadID)
 {
@@ -83,10 +80,10 @@ void main<T : IArithmetic & IGemmScalar>(
             if (pc.has_c != 0)
             {
                 uint c_idx = out_row * pc.stride_c0 + out_col * pc.stride_c1;
-                result = result + T.scale(c[c_idx], pc.beta);
+                result = result + T.scale(pc.c[c_idx], pc.beta);
             }
             uint y_idx = out_row * pc.stride_y0 + out_col * pc.stride_y1;
-            y[y_idx] = result;
+            pc.y[y_idx] = result;
         }
         return;
     }
@@ -103,11 +100,11 @@ void main<T : IArithmetic & IGemmScalar>(
         uint row_b = k_offset + thread_row;
 
         tileA[idx] = (out_row < pc.m && col_a < pc.k)
-                         ? a[out_row * stride_a_m + col_a * stride_a_k]
+                         ? pc.a[out_row * stride_a_m + col_a * stride_a_k]
                          : T(0);
 
         tileB[idx] = (row_b < pc.k && out_col < pc.n)
-                         ? b[row_b * stride_b_k + out_col * stride_b_n]
+                         ? pc.b[row_b * stride_b_k + out_col * stride_b_n]
                          : T(0);
 
         GroupMemoryBarrierWithGroupSync();
@@ -127,10 +124,10 @@ void main<T : IArithmetic & IGemmScalar>(
         if (pc.has_c != 0)
         {
             uint c_idx = out_row * pc.stride_c0 + out_col * pc.stride_c1;
-            result = result + T.scale(c[c_idx], pc.beta);
+            result = result + T.scale(pc.c[c_idx], pc.beta);
         }
 
         uint y_idx = out_row * pc.stride_y0 + out_col * pc.stride_y1;
-        y[y_idx] = result;
+        pc.y[y_idx] = result;
     }
 }

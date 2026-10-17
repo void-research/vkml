@@ -5,8 +5,11 @@ const int WORKGROUP_SIZE_Y = 1;
 [vk::constant_id(2)]
 const int WORKGROUP_SIZE_Z = 1;
 
-struct PushConstants
-{
+struct PushConstants<T> {
+    ImmutablePtr<T> src;
+    ImmutablePtr<T> weights;
+    Ptr<T> dst;
+    ImmutablePtr<T> bias;
     uint n;
     uint c;
     uint m;
@@ -26,16 +29,10 @@ struct PushConstants
     uint has_bias;
 }
 
-[[vk::push_constant]]
-PushConstants pc;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic>(
-    StructuredBuffer<T> src,
-    StructuredBuffer<T> weights,
-    RWStructuredBuffer<T> dst,
-    StructuredBuffer<T> bias,
+    uniform PushConstants<T> pc,
     uint3 threadId: SV_DispatchThreadID)
 {
     uint ox = threadId.x;
@@ -77,16 +74,16 @@ void main<T : IArithmetic>(
                 uint ic_in_group = ic - c_start;
                 uint w_off = (((oc * c_per_group + ic_in_group) * pc.k_h + ky) * pc.k_w) + kx;
 
-                acc = acc + src[src_off] * weights[w_off];
+                acc = acc + pc.src[src_off] * pc.weights[w_off];
             }
         }
     }
 
     if (pc.has_bias != 0u)
     {
-        acc = acc + bias[oc];
+        acc = acc + pc.bias[oc];
     }
 
     uint dst_off = (((batch * pc.m + oc) * pc.out_h + oy) * pc.out_w) + ox;
-    dst[dst_off] = acc;
+    pc.dst[dst_off] = acc;
 }

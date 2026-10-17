@@ -1,12 +1,8 @@
 mod f32_f32_cpu;
-mod push_constants;
 
 use crate::ComputeManager;
 use crate::VKMLError;
 use crate::gpu::shader::{Shader, shader};
-use crate::instruction::maxpool::push_constants::{
-    MaxPool1DPushConstants, MaxPool2DPushConstants, MaxPool3DPushConstants,
-};
 use crate::utils::{OnnxAutoPad, calc_begin_and_end_pads};
 use crate::{
     instruction::{
@@ -130,42 +126,44 @@ impl Instruction for MaxPoolInstruction {
                             1
                         };
 
-                        let pc = MaxPool1DPushConstants {
-                            n: src_dims[0] as u32,
-                            c: src_dims[1] as u32,
-                            input_len,
-                            output_len,
-                            kernel: self.kernel_shape.first().copied().unwrap_or(1) as u32,
-                            stride: self.strides.first().copied().unwrap_or(1) as u32,
-                            dilation: self.dilations.first().copied().unwrap_or(1) as u32,
-                            pad_begin: pb.first().copied().unwrap_or(0) as u32,
-                        };
+                        let pc = PushConstants::new()
+                            .buffer(self.src)
+                            .buffer(self.dst)
+                            .push(src_dims[0] as u32)
+                            .push(src_dims[1] as u32)
+                            .push(input_len)
+                            .push(output_len)
+                            .push(self.kernel_shape.first().copied().unwrap_or(1) as u32)
+                            .push(self.strides.first().copied().unwrap_or(1) as u32)
+                            .push(self.dilations.first().copied().unwrap_or(1) as u32)
+                            .push(pb.first().copied().unwrap_or(0) as u32);
 
                         let total = (src_dims[0] as u32) * (src_dims[1] as u32) * output_len;
                         (
                             &MAXPOOL_1D_SHADER,
                             gpu.workgroup_size_1d(),
-                            PushConstants::from_struct(&pc),
+                            pc,
                             [total, 1, 1],
                         )
                     }
                     2 => {
-                        let pc = MaxPool2DPushConstants {
-                            n: src_dims[0] as u32,
-                            c: src_dims[1] as u32,
-                            in_h: src_dims[2] as u32,
-                            in_w: src_dims[3] as u32,
-                            out_h: dst_dims[2] as u32,
-                            out_w: dst_dims[3] as u32,
-                            k_h: self.kernel_shape.first().copied().unwrap_or(1) as u32,
-                            k_w: self.kernel_shape.get(1).copied().unwrap_or(1) as u32,
-                            s_h: self.strides.first().copied().unwrap_or(1) as u32,
-                            s_w: self.strides.get(1).copied().unwrap_or(1) as u32,
-                            d_h: self.dilations.first().copied().unwrap_or(1) as u32,
-                            d_w: self.dilations.get(1).copied().unwrap_or(1) as u32,
-                            pad_h: pb.first().copied().unwrap_or(0) as u32,
-                            pad_w: pb.get(1).copied().unwrap_or(0) as u32,
-                        };
+                        let pc = PushConstants::new()
+                            .buffer(self.src)
+                            .buffer(self.dst)
+                            .push(src_dims[0] as u32)
+                            .push(src_dims[1] as u32)
+                            .push(src_dims[2] as u32)
+                            .push(src_dims[3] as u32)
+                            .push(dst_dims[2] as u32)
+                            .push(dst_dims[3] as u32)
+                            .push(self.kernel_shape.first().copied().unwrap_or(1) as u32)
+                            .push(self.kernel_shape.get(1).copied().unwrap_or(1) as u32)
+                            .push(self.strides.first().copied().unwrap_or(1) as u32)
+                            .push(self.strides.get(1).copied().unwrap_or(1) as u32)
+                            .push(self.dilations.first().copied().unwrap_or(1) as u32)
+                            .push(self.dilations.get(1).copied().unwrap_or(1) as u32)
+                            .push(pb.first().copied().unwrap_or(0) as u32)
+                            .push(pb.get(1).copied().unwrap_or(0) as u32);
 
                         let out_w = dst_dims[3] as u32;
                         let out_h = dst_dims[2] as u32;
@@ -174,33 +172,34 @@ impl Instruction for MaxPoolInstruction {
                         (
                             &MAXPOOL_2D_SHADER,
                             gpu.workgroup_size_2d(),
-                            PushConstants::from_struct(&pc),
+                            pc,
                             [out_w, out_h, batch_nc],
                         )
                     }
                     3 => {
-                        let pc = MaxPool3DPushConstants {
-                            n: src_dims[0] as u32,
-                            c: src_dims[1] as u32,
-                            in_d: src_dims[2] as u32,
-                            in_h: src_dims[3] as u32,
-                            in_w: src_dims[4] as u32,
-                            out_d: dst_dims[2] as u32,
-                            out_h: dst_dims[3] as u32,
-                            out_w: dst_dims[4] as u32,
-                            k_d: self.kernel_shape.first().copied().unwrap_or(1) as u32,
-                            k_h: self.kernel_shape.get(1).copied().unwrap_or(1) as u32,
-                            k_w: self.kernel_shape.get(2).copied().unwrap_or(1) as u32,
-                            s_d: self.strides.first().copied().unwrap_or(1) as u32,
-                            s_h: self.strides.get(1).copied().unwrap_or(1) as u32,
-                            s_w: self.strides.get(2).copied().unwrap_or(1) as u32,
-                            d_d: self.dilations.first().copied().unwrap_or(1) as u32,
-                            d_h: self.dilations.get(1).copied().unwrap_or(1) as u32,
-                            d_w: self.dilations.get(2).copied().unwrap_or(1) as u32,
-                            pad_d: pb.first().copied().unwrap_or(0) as u32,
-                            pad_h: pb.get(1).copied().unwrap_or(0) as u32,
-                            pad_w: pb.get(2).copied().unwrap_or(0) as u32,
-                        };
+                        let pc = PushConstants::new()
+                            .buffer(self.src)
+                            .buffer(self.dst)
+                            .push(src_dims[0] as u32)
+                            .push(src_dims[1] as u32)
+                            .push(src_dims[2] as u32)
+                            .push(src_dims[3] as u32)
+                            .push(src_dims[4] as u32)
+                            .push(dst_dims[2] as u32)
+                            .push(dst_dims[3] as u32)
+                            .push(dst_dims[4] as u32)
+                            .push(self.kernel_shape.first().copied().unwrap_or(1) as u32)
+                            .push(self.kernel_shape.get(1).copied().unwrap_or(1) as u32)
+                            .push(self.kernel_shape.get(2).copied().unwrap_or(1) as u32)
+                            .push(self.strides.first().copied().unwrap_or(1) as u32)
+                            .push(self.strides.get(1).copied().unwrap_or(1) as u32)
+                            .push(self.strides.get(2).copied().unwrap_or(1) as u32)
+                            .push(self.dilations.first().copied().unwrap_or(1) as u32)
+                            .push(self.dilations.get(1).copied().unwrap_or(1) as u32)
+                            .push(self.dilations.get(2).copied().unwrap_or(1) as u32)
+                            .push(pb.first().copied().unwrap_or(0) as u32)
+                            .push(pb.get(1).copied().unwrap_or(0) as u32)
+                            .push(pb.get(2).copied().unwrap_or(0) as u32);
 
                         let out_w = dst_dims[4] as u32;
                         let out_h = dst_dims[3] as u32;
@@ -210,7 +209,7 @@ impl Instruction for MaxPoolInstruction {
                         (
                             &MAXPOOL_3D_SHADER,
                             gpu.workgroup_size_3d(),
-                            PushConstants::from_struct(&pc),
+                            pc,
                             [out_w, out_h, total_z],
                         )
                     }
@@ -226,7 +225,6 @@ impl Instruction for MaxPoolInstruction {
                     local_size,
                     work_size,
                     push_constants,
-                    storage_buffers: Box::new([Some(self.src), Some(self.dst)]),
                 })))
             }
         }

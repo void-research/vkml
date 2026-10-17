@@ -1,10 +1,8 @@
 mod f32_f32_f32_cpu;
-mod push_constants;
 
 use crate::ComputeManager;
 use crate::VKMLError;
 use crate::gpu::shader::{Shader, shader};
-use crate::instruction::add::push_constants::AddPushConstants;
 use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     instruction::{
@@ -112,7 +110,10 @@ impl Instruction for AddInstruction {
                 let local_size = gpu.workgroup_size_1d();
 
                 let push_constants = if use_nostride {
-                    PushConstants::empty()
+                    PushConstants::new()
+                        .buffer(self.src1)
+                        .buffer(self.src2)
+                        .buffer(self.dst)
                 } else {
                     let mut dims_arr = [0u32; 8];
                     for (i, &d) in dst_dims.iter().enumerate().take(8) {
@@ -129,15 +130,15 @@ impl Instruction for AddInstruction {
                         strides_b_arr[i] = s as u32;
                     }
 
-                    let pc = AddPushConstants {
-                        rank: rank as u32,
-                        pad: 0,
-                        total: num_elements,
-                        dims: dims_arr,
-                        strides_a: strides_a_arr,
-                        strides_b: strides_b_arr,
-                    };
-                    PushConstants::from_struct(&pc)
+                    PushConstants::new()
+                        .buffer(self.src1)
+                        .buffer(self.src2)
+                        .buffer(self.dst)
+                        .push(num_elements)
+                        .push(rank as u32)
+                        .push(dims_arr)
+                        .push(strides_a_arr)
+                        .push(strides_b_arr)
                 };
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
@@ -145,7 +146,6 @@ impl Instruction for AddInstruction {
                     local_size,
                     work_size: [num_elements, 1, 1],
                     push_constants,
-                    storage_buffers: Box::new([Some(self.src1), Some(self.src2), Some(self.dst)]),
                 })))
             }
             ComputeTarget::Cpu => {

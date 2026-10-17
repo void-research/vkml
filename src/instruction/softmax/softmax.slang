@@ -1,17 +1,14 @@
-struct PushConstants
-{
+struct PushConstants<T> {
+    ImmutablePtr<T> src;
+    Ptr<T> dst;
     uint batch_size;
     uint feature_size;
 }
 
-[[vk::push_constant]]
-PushConstants pc;
-
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void main<T : __BuiltinFloatingPointType>(
-    StructuredBuffer<T> src,
-    RWStructuredBuffer<T> dst,
+    uniform PushConstants<T> pc,
     uint3 threadId: SV_GroupThreadID, uint3 groupId: SV_GroupID)
 {
     uint local_id = threadId.x;
@@ -35,12 +32,12 @@ void main<T : __BuiltinFloatingPointType>(
     // Pass 1: Compute local max and sum simultaneously (Online Softmax)
     if (local_id < pc.feature_size)
     {
-        local_max = src[base_idx + local_id];
+        local_max = pc.src[base_idx + local_id];
         local_sum = T(1.0);
 
         for (uint i = local_id + WG_SIZE; i < pc.feature_size; i += WG_SIZE)
         {
-            T val = src[base_idx + i];
+            T val = pc.src[base_idx + i];
             if (val > local_max)
             {
                 local_sum = local_sum * exp(local_max - val) + T(1.0);
@@ -95,7 +92,6 @@ void main<T : __BuiltinFloatingPointType>(
     for (uint i = local_id; i < pc.feature_size; i += WG_SIZE)
     {
         uint idx = base_idx + i;
-        dst[idx] = exp(src[idx] - final_max) / final_sum;
+        pc.dst[idx] = exp(pc.src[idx] - final_max) / final_sum;
     }
 }
-

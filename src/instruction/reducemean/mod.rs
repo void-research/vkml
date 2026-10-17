@@ -1,10 +1,8 @@
 mod f32_cpu;
-pub mod push_constants;
 
 use crate::VKMLError;
 use crate::gpu::shader::{Shader, shader};
 use crate::instruction::reducemean::f32_cpu::f32_cpu;
-use crate::instruction::reducemean::push_constants::ReduceMeanPushConstants;
 use crate::instruction::{Dispatch, Instruction, PushConstants, VkOperation};
 use crate::{
     ComputeManager,
@@ -93,20 +91,17 @@ impl Instruction for ReduceMeanInstruction {
                 }
 
                 let out_elements = dst_desc.num_elements() as u32;
-
-                let mean_pc = ReduceMeanPushConstants {
-                    total: out_elements,
-                    reduction_size: reduction_size as u32,
-                };
-
                 let local_size = gpu.workgroup_size_1d();
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
                     spv,
                     local_size,
                     work_size: [out_elements, 1, 1],
-                    push_constants: PushConstants::from_struct(&mean_pc),
-                    storage_buffers: Box::new([Some(self.src), Some(self.dst)]),
+                    push_constants: PushConstants::new()
+                        .buffer(self.src)
+                        .buffer(self.dst)
+                        .push(out_elements)
+                        .push(reduction_size as u32),
                 })))
             }
             ComputeTarget::Cpu => {

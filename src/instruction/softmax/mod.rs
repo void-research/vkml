@@ -1,10 +1,8 @@
 mod f32_f32_cpu;
-mod push_constants;
 
 use crate::ComputeManager;
 use crate::VKMLError;
 use crate::gpu::shader::{Shader, shader};
-use crate::instruction::softmax::push_constants::SoftmaxPushConstants;
 use crate::{
     instruction::{
         Dispatch, Instruction, PushConstants, VkOperation, softmax::f32_f32_cpu::f32_f32_cpu,
@@ -88,19 +86,17 @@ impl Instruction for SoftmaxInstruction {
                 let feature_size = dims[dim] as usize;
                 let batch_size = src_desc.num_elements() / feature_size;
 
-                let push_constants = SoftmaxPushConstants {
-                    batch_size: batch_size as u32,
-                    feature_size: feature_size as u32,
-                };
-
                 let local_size = [256, 1, 1];
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
                     spv,
                     local_size,
                     work_size: [(batch_size * local_size[0] as usize) as u32, 1, 1],
-                    push_constants: PushConstants::from_struct(&push_constants),
-                    storage_buffers: Box::new([Some(self.src), Some(self.dst)]),
+                    push_constants: PushConstants::new()
+                        .buffer(self.src)
+                        .buffer(self.dst)
+                        .push(batch_size as u32)
+                        .push(feature_size as u32),
                 })))
             }
             ComputeTarget::Cpu => {

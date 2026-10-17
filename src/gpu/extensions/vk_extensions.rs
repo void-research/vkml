@@ -19,6 +19,7 @@ pub struct DeviceCreateExtras {
     // DeviceCreateInfo::next value. When no features are enabled pnext.ptr
     // will be null and _holders will be empty.
     pub pnext: DevicePNext,
+    pub features: vk::PhysicalDeviceFeatures,
 }
 
 impl DeviceCreateExtras {
@@ -144,7 +145,7 @@ impl VkExtensions {
     }
 
     // return static CStr references for extensions we want to enable
-    pub fn enabled_extension_names(&self) -> Vec<&'static CStr> {
+    fn enabled_extension_names(&self) -> Vec<&'static CStr> {
         let mut v = Vec::new();
 
         if self.cooperative_matrix.is_some() {
@@ -214,7 +215,7 @@ impl VkExtensions {
                 s_type: vk::StructureType::PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
                 next: ptr::null_mut(),
                 shader_float16: vk::TRUE,
-                shader_int8: vk::FALSE,
+                shader_int8: vk::TRUE,
             });
             feat.next = head as *mut _;
             head = (&*feat) as *const _ as *mut c_void;
@@ -273,6 +274,33 @@ impl VkExtensions {
             holders.push(feat);
         }
 
+        let mut bda_feat = Box::new(vk::PhysicalDeviceBufferDeviceAddressFeatures {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
+            next: ptr::null_mut(),
+            buffer_device_address: vk::TRUE,
+            buffer_device_address_capture_replay: vk::FALSE,
+            buffer_device_address_multi_device: vk::FALSE,
+        });
+        bda_feat.next = head as *mut _;
+        head = (&*bda_feat) as *const _ as *mut c_void;
+        holders.push(bda_feat);
+
+        let mut sync2_feat = Box::new(vk::PhysicalDeviceSynchronization2Features {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,
+            next: ptr::null_mut(),
+            synchronization2: vk::TRUE,
+        });
+        sync2_feat.next = head as *mut _;
+        head = (&*sync2_feat) as *const _ as *mut c_void;
+        holders.push(sync2_feat);
+
+        let features = vk::PhysicalDeviceFeatures {
+            shader_int64: vk::TRUE,
+            shader_float64: vk::TRUE,
+            shader_int16: vk::TRUE,
+            ..Default::default()
+        };
+
         DeviceCreateExtras {
             name_ptrs: self
                 .enabled_extension_names()
@@ -283,6 +311,7 @@ impl VkExtensions {
                 ptr: head,
                 _holders: holders,
             },
+            features,
         }
     }
 

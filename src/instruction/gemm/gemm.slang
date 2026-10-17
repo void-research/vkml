@@ -5,8 +5,11 @@ const int WORKGROUP_SIZE_Y = 1;
 [vk::constant_id(2)]
 const int WORKGROUP_SIZE_Z = 1;
 
-struct PushConstants
-{
+struct PushConstants<T> {
+    ImmutablePtr<T> a;
+    ImmutablePtr<T> b;
+    ImmutablePtr<T> c;
+    Ptr<T> y;
     uint m;
     uint k;
     uint n;
@@ -24,9 +27,6 @@ struct PushConstants
     float beta;
     uint has_c;
 }
-
-[[vk::push_constant]]
-PushConstants pc;
 
 interface IGemmScalar
 {
@@ -48,10 +48,7 @@ extension uint64_t : IGemmScalar { static uint64_t scale(uint64_t val, float s) 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic & IGemmScalar>(
-    StructuredBuffer<T> a,
-    StructuredBuffer<T> b,
-    StructuredBuffer<T> c,
-    RWStructuredBuffer<T> y,
+    uniform PushConstants<T> pc,
     uint3 threadId: SV_DispatchThreadID)
 {
     uint row = threadId.y;
@@ -73,7 +70,7 @@ void main<T : IArithmetic & IGemmScalar>(
     {
         uint a_idx = row * stride_a_m + i * stride_a_k;
         uint b_idx = i * stride_b_k + col * stride_b_n;
-        sum = sum + a[a_idx] * b[b_idx];
+        sum = sum + pc.a[a_idx] * pc.b[b_idx];
     }
 
     T result = T.scale(sum, pc.alpha);
@@ -81,9 +78,9 @@ void main<T : IArithmetic & IGemmScalar>(
     if (pc.has_c != 0)
     {
         uint c_idx = row * pc.stride_c0 + col * pc.stride_c1;
-        result = result + T.scale(c[c_idx], pc.beta);
+        result = result + T.scale(pc.c[c_idx], pc.beta);
     }
 
     uint y_idx = row * pc.stride_y0 + col * pc.stride_y1;
-    y[y_idx] = result;
+    pc.y[y_idx] = result;
 }

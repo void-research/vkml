@@ -5,8 +5,10 @@ const int WORKGROUP_SIZE_Y = 1;
 [vk::constant_id(2)]
 const int WORKGROUP_SIZE_Z = 1;
 
-struct PushConstants
-{
+struct PushConstants<T> {
+    ImmutablePtr<T> src1;
+    ImmutablePtr<T> src2;
+    Ptr<T> dst;
     uint batch;
     uint m;
     uint k;
@@ -22,15 +24,10 @@ struct PushConstants
     uint stride_c1;
 }
 
-[[vk::push_constant]]
-PushConstants pc;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic>(
-    StructuredBuffer<T> src1,
-    StructuredBuffer<T> src2,
-    RWStructuredBuffer<T> dst,
+    uniform PushConstants<T> pc,
     uint3 groupId: SV_GroupID,
     uint3 threadId: SV_GroupThreadID)
 {
@@ -56,7 +53,7 @@ void main<T : IArithmetic>(
     {
         if (out_row < pc.m && out_col < pc.n)
         {
-            dst[batch * pc.stride_c_batch + out_row * pc.stride_c0 + out_col * pc.stride_c1] = T(0);
+            pc.dst[batch * pc.stride_c_batch + out_row * pc.stride_c0 + out_col * pc.stride_c1] = T(0);
         }
         return;
     }
@@ -65,8 +62,6 @@ void main<T : IArithmetic>(
     static groupshared T tileB[WORKGROUP_SIZE_X * WORKGROUP_SIZE_Y];
 
     uint idx = thread_row * TILE_SIZE + thread_col;
-    uint base_a = batch * pc.stride_a_batch;
-    uint base_b = batch * pc.stride_b_batch;
 
     for (uint k_tile = 0; k_tile < num_k_tiles; k_tile++)
     {
@@ -75,12 +70,12 @@ void main<T : IArithmetic>(
         uint row_b = k_offset + thread_row;
 
         tileA[idx] = (out_row < pc.m && col_a < pc.k)
-                         ? src1[base_a + out_row * pc.stride_a0 + col_a * pc.stride_a1]
-                         : T(0);
+            ? pc.src1[batch * pc.stride_a_batch + out_row * pc.stride_a0 + col_a * pc.stride_a1]
+            : T(0);
 
         tileB[idx] = (row_b < pc.k && out_col < pc.n)
-                         ? src2[base_b + row_b * pc.stride_b0 + out_col * pc.stride_b1]
-                         : T(0);
+            ? pc.src2[batch * pc.stride_b_batch + row_b * pc.stride_b0 + out_col * pc.stride_b1]
+            : T(0);
 
         GroupMemoryBarrierWithGroupSync();
 
@@ -94,6 +89,6 @@ void main<T : IArithmetic>(
 
     if (out_row < pc.m && out_col < pc.n)
     {
-        dst[batch * pc.stride_c_batch + out_row * pc.stride_c0 + out_col * pc.stride_c1] = acc;
+        pc.dst[batch * pc.stride_c_batch + out_row * pc.stride_c0 + out_col * pc.stride_c1] = acc;
     }
 }

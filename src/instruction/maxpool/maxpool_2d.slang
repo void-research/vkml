@@ -5,8 +5,9 @@ const int WORKGROUP_SIZE_Y = 1;
 [vk::constant_id(2)]
 const int WORKGROUP_SIZE_Z = 1;
 
-struct PushConstants
-{
+struct PushConstants<T> {
+    ImmutablePtr<T> src;
+    Ptr<T> dst;
     uint n;
     uint c;
     uint in_h;
@@ -23,14 +24,10 @@ struct PushConstants
     uint pad_w;
 }
 
-[[vk::push_constant]]
-PushConstants pc;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic>(
-    StructuredBuffer<T> src,
-    RWStructuredBuffer<T> dst,
+    uniform PushConstants<T> pc,
     uint3 threadId: SV_DispatchThreadID)
 {
     uint out_x = threadId.x;
@@ -64,7 +61,7 @@ void main<T : IArithmetic>(
                 continue;
 
             uint src_off = (((batch * pc.c + ch) * pc.in_h + in_y) * pc.in_w) + in_x;
-            T val = src[src_off];
+            T val = pc.src[src_off];
             if (!found)
             {
                 acc = val;
@@ -79,7 +76,7 @@ void main<T : IArithmetic>(
 
     uint dst_off = (((batch * pc.c + ch) * pc.out_h + out_y) * pc.out_w) + out_x;
     if (found)
-        dst[dst_off] = acc;
+        pc.dst[dst_off] = acc;
     else
-        dst[dst_off] = T(0);
+        pc.dst[dst_off] = T(0);
 }

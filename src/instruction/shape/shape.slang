@@ -5,23 +5,18 @@ const int WORKGROUP_SIZE_Y = 1;
 [vk::constant_id(2)]
 const int WORKGROUP_SIZE_Z = 1;
 
-struct PushConstants
-{
+struct PushConstants {
+    Ptr<uint> dst;
     uint slice_len;
     uint start;
-    uint pad;
     uint dims_lo[8];
     uint dims_hi[8];
 }
 
-[[vk::push_constant]]
-PushConstants pc;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic>(
-    // We write pairs of uints (low, high) to form 64-bit bounds
-    RWStructuredBuffer<uint> dst,
+    uniform PushConstants pc,
     uint3 threadId: SV_DispatchThreadID)
 {
     uint idx = threadId.x;
@@ -36,6 +31,6 @@ void main<T : IArithmetic>(
 
     // Little endian 64-bit word format packing
     uint out_idx = idx * 2u;
-    dst[out_idx] = low;
-    dst[out_idx + 1u] = high;
+    pc.dst[out_idx] = low;
+    pc.dst[out_idx + 1u] = high;
 }

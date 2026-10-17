@@ -5,8 +5,9 @@ const int WORKGROUP_SIZE_Y = 1;
 [vk::constant_id(2)]
 const int WORKGROUP_SIZE_Z = 1;
 
-struct PushConstants
-{
+struct PushConstants<T> {
+    ImmutablePtr<T> src;
+    Ptr<T> dst;
     uint n;
     uint c;
     uint in_d;
@@ -29,14 +30,10 @@ struct PushConstants
     uint pad_w;
 }
 
-[[vk::push_constant]]
-PushConstants pc;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic>(
-    StructuredBuffer<T> src,
-    RWStructuredBuffer<T> dst,
+    uniform PushConstants<T> pc,
     uint3 threadId: SV_DispatchThreadID)
 {
     uint out_x = threadId.x;
@@ -60,23 +57,33 @@ void main<T : IArithmetic>(
 
     for (uint kd = 0u; kd < pc.k_d; ++kd)
     {
+        int in_d_i = int(out_d_idx) * int(pc.s_d) - int(pc.pad_d) + int(kd) * int(pc.d_d);
+        if (in_d_i < 0)
+            continue;
+        uint in_d = uint(in_d_i);
+        if (in_d >= pc.in_d)
+            continue;
+
         for (uint ky = 0u; ky < pc.k_h; ++ky)
         {
+            int in_y_i = int(out_y) * int(pc.s_h) - int(pc.pad_h) + int(ky) * int(pc.d_h);
+            if (in_y_i < 0)
+                continue;
+            uint in_y = uint(in_y_i);
+            if (in_y >= pc.in_h)
+                continue;
+
             for (uint kx = 0u; kx < pc.k_w; ++kx)
             {
-                int in_d_i = int(out_d_idx) * int(pc.s_d) - int(pc.pad_d) + int(kd) * int(pc.d_d);
-                int in_y_i = int(out_y) * int(pc.s_h) - int(pc.pad_h) + int(ky) * int(pc.d_h);
                 int in_x_i = int(out_x) * int(pc.s_w) - int(pc.pad_w) + int(kx) * int(pc.d_w);
-                if (in_d_i < 0 || in_y_i < 0 || in_x_i < 0)
+                if (in_x_i < 0)
                     continue;
-                uint in_d_u = uint(in_d_i);
-                uint in_y = uint(in_y_i);
                 uint in_x = uint(in_x_i);
-                if (in_d_u >= pc.in_d || in_y >= pc.in_h || in_x >= pc.in_w)
+                if (in_x >= pc.in_w)
                     continue;
 
-                uint src_off = ((((batch * pc.c + ch) * pc.in_d + in_d_u) * pc.in_h + in_y) * pc.in_w) + in_x;
-                T val = src[src_off];
+                uint src_off = ((((batch * pc.c + ch) * pc.in_d + in_d) * pc.in_h + in_y) * pc.in_w) + in_x;
+                T val = pc.src[src_off];
                 if (!found)
                 {
                     acc = val;
@@ -92,7 +99,7 @@ void main<T : IArithmetic>(
 
     uint dst_off = ((((batch * pc.c + ch) * pc.out_d + out_d_idx) * pc.out_h + out_y) * pc.out_w) + out_x;
     if (found)
-        dst[dst_off] = acc;
+        pc.dst[dst_off] = acc;
     else
-        dst[dst_off] = T(0);
+        pc.dst[dst_off] = T(0);
 }

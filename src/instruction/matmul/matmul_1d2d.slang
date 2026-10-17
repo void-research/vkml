@@ -5,8 +5,10 @@ const int WORKGROUP_SIZE_Y = 1;
 [vk::constant_id(2)]
 const int WORKGROUP_SIZE_Z = 1;
 
-struct PushConstants
-{
+struct PushConstants<T> {
+    ImmutablePtr<T> src1;
+    ImmutablePtr<T> src2;
+    Ptr<T> dst;
     uint k;
     uint n;
     uint stride_a;
@@ -15,15 +17,10 @@ struct PushConstants
     uint stride_c;
 }
 
-[[vk::push_constant]]
-PushConstants pc;
-
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE_X, WORKGROUP_SIZE_Y, WORKGROUP_SIZE_Z)]
 void main<T : IArithmetic>(
-    StructuredBuffer<T> src1,
-    StructuredBuffer<T> src2,
-    RWStructuredBuffer<T> dst,
+    uniform PushConstants<T> pc,
     uint3 groupId: SV_GroupID,
     uint3 threadId: SV_GroupThreadID)
 {
@@ -36,7 +33,7 @@ void main<T : IArithmetic>(
     {
         for (uint i = tid; i < pc.k; i += WORKGROUP_SIZE_Y)
         {
-            sum = sum + src1[i * pc.stride_a] * src2[i * pc.stride_b0 + col * pc.stride_b1];
+            sum = sum + pc.src1[i * pc.stride_a] * pc.src2[i * pc.stride_b0 + col * pc.stride_b1];
         }
     }
 
@@ -58,11 +55,11 @@ void main<T : IArithmetic>(
 
         if (tid == 0 && col < pc.n)
         {
-            dst[col * pc.stride_c] = sdata[shmem_idx];
+            pc.dst[col * pc.stride_c] = sdata[shmem_idx];
         }
     }
     else if (col < pc.n)
     {
-        dst[col * pc.stride_c] = sum;
+        pc.dst[col * pc.stride_c] = sum;
     }
 }

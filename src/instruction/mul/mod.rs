@@ -1,10 +1,8 @@
 mod f32_f32_f32_cpu;
-mod push_constants;
 
 use crate::ComputeManager;
 use crate::VKMLError;
 use crate::gpu::shader::{Shader, shader};
-use crate::instruction::mul::push_constants::MulPushConstants;
 use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     instruction::{
@@ -116,24 +114,21 @@ impl Instruction for MulInstruction {
                 }
 
                 let num_elements = dst_desc.num_elements() as u32;
-
-                let push_const_values = MulPushConstants {
-                    rank,
-                    pad: 0,
-                    total: num_elements,
-                    dims: dims_arr,
-                    strides_a: strides_a_arr,
-                    strides_b: strides_b_arr,
-                };
-
                 let local_size = gpu.workgroup_size_1d();
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
                     spv,
                     local_size,
                     work_size: [num_elements, 1, 1],
-                    push_constants: PushConstants::from_struct(&push_const_values),
-                    storage_buffers: Box::new([Some(self.src1), Some(self.src2), Some(self.dst)]),
+                    push_constants: PushConstants::new()
+                        .buffer(self.src1)
+                        .buffer(self.src2)
+                        .buffer(self.dst)
+                        .push(num_elements)
+                        .push(rank)
+                        .push(dims_arr)
+                        .push(strides_a_arr)
+                        .push(strides_b_arr),
                 })))
             }
             ComputeTarget::Cpu => {

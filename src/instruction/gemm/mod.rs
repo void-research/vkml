@@ -1,10 +1,8 @@
 mod f32_f32_f32_f32_cpu;
-mod push_constants;
 
 use crate::VKMLError;
 use crate::gpu::shader::{Shader, shader};
 use crate::instruction::gemm::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu;
-use crate::instruction::gemm::push_constants::GemmPushConstants;
 use crate::utils::broadcast_strides;
 use crate::{
     ComputeManager,
@@ -146,31 +144,33 @@ impl Instruction for GemmInstruction {
                     .unwrap_or((0, 0));
 
                 let has_c = self.c.is_some();
-                let pc = GemmPushConstants {
-                    m: m as u32,
-                    k: k as u32,
-                    n: n as u32,
-                    stride_a0: a_strides[0] as u32,
-                    stride_a1: a_strides[1] as u32,
-                    stride_b0: b_strides[0] as u32,
-                    stride_b1: b_strides[1] as u32,
-                    stride_y0: y_strides[0] as u32,
-                    stride_y1: y_strides[1] as u32,
-                    stride_c0: c_strides.0,
-                    stride_c1: c_strides.1,
-                    trans_a: if self.trans_a { 1u32 } else { 0u32 },
-                    trans_b: if self.trans_b { 1u32 } else { 0u32 },
-                    alpha: self.alpha.to_bits(),
-                    beta: self.beta.to_bits(),
-                    has_c: if has_c { 1u32 } else { 0u32 },
-                };
+                let push_constants = PushConstants::new()
+                    .buffer(self.a)
+                    .buffer(self.b)
+                    .buffer(self.c)
+                    .buffer(self.y)
+                    .push(m as u32)
+                    .push(k as u32)
+                    .push(n as u32)
+                    .push(a_strides[0] as u32)
+                    .push(a_strides[1] as u32)
+                    .push(b_strides[0] as u32)
+                    .push(b_strides[1] as u32)
+                    .push(y_strides[0] as u32)
+                    .push(y_strides[1] as u32)
+                    .push(c_strides.0)
+                    .push(c_strides.1)
+                    .push(if self.trans_a { 1u32 } else { 0u32 })
+                    .push(if self.trans_b { 1u32 } else { 0u32 })
+                    .push(self.alpha)
+                    .push(self.beta)
+                    .push(if has_c { 1u32 } else { 0u32 });
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
                     spv,
                     local_size,
                     work_size: [n as u32, m as u32, 1],
-                    push_constants: PushConstants::from_struct(&pc),
-                    storage_buffers: Box::new([Some(self.a), Some(self.b), self.c, Some(self.y)]),
+                    push_constants,
                 })))
             }
         }

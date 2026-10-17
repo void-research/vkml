@@ -1,8 +1,5 @@
-mod push_constants;
-
 use crate::VKMLError;
 use crate::gpu::shader::{Shader, shader};
-use crate::instruction::shape::push_constants::ShapePushConstants;
 use crate::instruction::{Dispatch, Instruction, PushConstants, VkOperation};
 use crate::tensor::{ComputeTarget, TensorDesc};
 use crate::{ComputeManager, tensor_graph::TensorId};
@@ -106,22 +103,18 @@ impl Instruction for ShapeInstruction {
                     dims_hi[i] = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
                 }
 
-                let pc = ShapePushConstants {
-                    slice_len: slice_len as u32,
-                    start: start as u32,
-                    pad: 0,
-                    dims_lo,
-                    dims_hi,
-                };
-
                 let local_size = gpu.workgroup_size_1d();
 
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
                     spv,
                     local_size,
                     work_size: [slice_len as u32, 1, 1],
-                    push_constants: PushConstants::from_struct(&pc),
-                    storage_buffers: Box::new([Some(self.dst)]),
+                    push_constants: PushConstants::new()
+                        .buffer(self.dst)
+                        .push(slice_len as u32)
+                        .push(start as u32)
+                        .push(dims_lo)
+                        .push(dims_hi),
                 })))
             }
             ComputeTarget::Cpu => Ok(Some(Dispatch::Cpu)),

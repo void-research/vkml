@@ -1,7 +1,7 @@
 use std::{ffi::c_void, ptr};
-use vulkanalia::vk::{self, DeviceV1_0, DeviceV1_3, DeviceV1_4, Handle};
+use vulkanalia::vk::{self, DeviceV1_0, DeviceV1_3, Handle};
 
-use crate::{ComputeManager, gpu::Gpu, instruction::VkOperation, tensor_graph::TensorId};
+use crate::{ComputeManager, gpu::Gpu, instruction::VkOperation};
 
 impl Gpu {
     fn create_pipeline(&self, shader_code: &[u8], local_size: [u32; 3]) -> vk::Pipeline {
@@ -103,60 +103,6 @@ impl Gpu {
         }
     }
 
-    // bind GPU storage buffers to descriptor set bindings
-    fn bind_storage_buffers(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        storage_buffers: &[Option<TensorId>],
-        cm: &ComputeManager,
-    ) {
-        let buffer_infos: Box<_> = storage_buffers
-            .iter()
-            .map(|id_opt| match id_opt {
-                Some(id) => {
-                    let mem = cm.tensor_read(*id).get_gpu_memory_or_panic();
-                    vk::DescriptorBufferInfo {
-                        buffer: mem.buffer,
-                        offset: 0,
-                        range: mem.size,
-                    }
-                }
-                None => vk::DescriptorBufferInfo {
-                    buffer: vk::Buffer::null(),
-                    offset: 0,
-                    range: 0,
-                },
-            })
-            .collect();
-
-        let write_descriptor_sets: Box<_> = buffer_infos
-            .iter()
-            .enumerate()
-            .map(|(i, info)| vk::WriteDescriptorSet {
-                s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-                next: ptr::null(),
-                dst_set: vk::DescriptorSet::null(),
-                dst_binding: i as u32,
-                dst_array_element: 0,
-                descriptor_count: 1,
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                buffer_info: info,
-                image_info: ptr::null(),
-                texel_buffer_view: ptr::null(),
-            })
-            .collect();
-
-        unsafe {
-            self.device.cmd_push_descriptor_set(
-                command_buffer,
-                vk::PipelineBindPoint::COMPUTE,
-                self.pipeline_layout,
-                0,
-                &write_descriptor_sets,
-            );
-        }
-    }
-
     fn bind_push_constants(&self, command_buffer: vk::CommandBuffer, data: &[u8]) {
         unsafe {
             self.device.cmd_push_constants(
@@ -196,13 +142,12 @@ impl Gpu {
                 spv,
                 local_size,
                 work_size,
-                push_constants,
-                storage_buffers,
+                mut push_constants,
             } => {
                 self.bind_compute_pipeline(command_buffer, spv, local_size);
-                self.bind_storage_buffers(command_buffer, &storage_buffers, cm);
 
                 if !push_constants.is_empty() {
+                    push_constants.resolve_pointers(cm);
                     self.bind_push_constants(command_buffer, push_constants.as_bytes());
                 }
 
@@ -214,7 +159,6 @@ impl Gpu {
                 local_size,
                 work_size,
                 push_constants,
-                storage_buffers,
             } => {
                 let dst_mem = cm.tensor_read(clear_dst).get_gpu_memory_or_panic();
 
@@ -257,7 +201,6 @@ impl Gpu {
                         local_size,
                         work_size,
                         push_constants,
-                        storage_buffers,
                     },
                     cm,
                 );
