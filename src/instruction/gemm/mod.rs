@@ -2,12 +2,13 @@ mod f32_f32_f32_f32_cpu;
 mod push_constants;
 
 use crate::VKMLError;
+use crate::gpu::shader::{Shader, shader};
 use crate::instruction::gemm::f32_f32_f32_f32_cpu::f32_f32_f32_f32_cpu;
 use crate::instruction::gemm::push_constants::GemmPushConstants;
 use crate::utils::broadcast_strides;
 use crate::{
     ComputeManager,
-    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, shader},
+    instruction::{Dispatch, Instruction, PushConstants, VkOperation},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };

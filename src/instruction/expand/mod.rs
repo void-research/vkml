@@ -3,11 +3,12 @@ mod push_constants;
 
 use crate::ComputeManager;
 use crate::VKMLError;
+use crate::gpu::shader::{Shader, shader};
 use crate::instruction::expand::f32_f32_cpu::f32_f32_cpu;
 use crate::instruction::expand::push_constants::ExpandPushConstants;
 use crate::utils::math::broadcast_strides;
 use crate::{
-    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, shader},
+    instruction::{Dispatch, Instruction, PushConstants, VkOperation},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };

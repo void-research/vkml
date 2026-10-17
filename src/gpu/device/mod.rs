@@ -11,7 +11,8 @@ use vulkanalia::{
 };
 
 use crate::{
-    compute::memory_tracker::MemoryTracker, gpu::VkExtensions, shader::Shader,
+    compute::memory_tracker::MemoryTracker,
+    gpu::{VkExtensions, shader::Shader},
     utils::error::VKMLError,
 };
 

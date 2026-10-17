@@ -3,14 +3,14 @@ mod push_constants;
 
 use crate::ComputeManager;
 use crate::VKMLError;
+use crate::gpu::shader::{Shader, shader};
 use crate::instruction::maxpool::push_constants::{
     MaxPool1DPushConstants, MaxPool2DPushConstants, MaxPool3DPushConstants,
 };
 use crate::utils::{OnnxAutoPad, calc_begin_and_end_pads};
 use crate::{
     instruction::{
-        Dispatch, Instruction, PushConstants, Shader, VkOperation,
-        maxpool::f32_f32_cpu::f32_f32_cpu, shader,
+        Dispatch, Instruction, PushConstants, VkOperation, maxpool::f32_f32_cpu::f32_f32_cpu,
     },
     tensor::{ComputeTarget, TensorDesc},
     tensor_graph::TensorId,

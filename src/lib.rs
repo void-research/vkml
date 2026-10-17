@@ -5,8 +5,6 @@
 
 mod utils;
 
-mod shader;
-
 pub mod gpu;
 
 mod compute;

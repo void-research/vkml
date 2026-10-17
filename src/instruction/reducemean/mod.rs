@@ -2,9 +2,10 @@ mod f32_cpu;
 pub mod push_constants;
 
 use crate::VKMLError;
+use crate::gpu::shader::{Shader, shader};
 use crate::instruction::reducemean::f32_cpu::f32_cpu;
 use crate::instruction::reducemean::push_constants::ReduceMeanPushConstants;
-use crate::instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, shader};
+use crate::instruction::{Dispatch, Instruction, PushConstants, VkOperation};
 use crate::{
     ComputeManager,
     tensor::{ComputeTarget, TensorDesc},

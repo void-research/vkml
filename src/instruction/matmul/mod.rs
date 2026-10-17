@@ -2,6 +2,7 @@ mod f32_f32_f32_cpu;
 mod push_constants;
 
 use crate::VKMLError;
+use crate::gpu::shader::{Shader, shader};
 use crate::instruction::matmul::f32_f32_f32_cpu::f32_f32_f32_cpu;
 use crate::instruction::matmul::push_constants::{
     MatMul1D2DAtomicPushConstants, MatMul1D2DPushConstants, MatMul1D3DPushConstants,
@@ -10,7 +11,7 @@ use crate::instruction::matmul::push_constants::{
 };
 use crate::{
     ComputeManager,
-    instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, shader},
+    instruction::{Dispatch, Instruction, PushConstants, VkOperation},
     tensor::ComputeTarget,
     tensor_graph::TensorId,
 };

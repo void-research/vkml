@@ -12,7 +12,7 @@ pub struct Shader {
 #[macro_export]
 macro_rules! shader_variant {
     ($name:literal, $dtype:ident) => {
-        $crate::shader::ShaderVariant {
+        $crate::gpu::shader::ShaderVariant {
             dtype: onnx_extractor::DataType::$dtype,
             spv: include_bytes!(concat!(
                 env!("OUT_DIR"),
@@ -30,7 +30,7 @@ macro_rules! shader_variant {
 macro_rules! shader {
     // standard IArithmetic types
     ($name:literal, IArithmetic) => {
-        $crate::shader::Shader {
+        $crate::gpu::shader::Shader {
             variants: &[
                 $crate::shader_variant!($name, Float),
                 $crate::shader_variant!($name, Float16),
@@ -52,7 +52,7 @@ macro_rules! shader {
     };
     // explicit type list; [Float, Float16] or [Int64]
     ($name:literal, [$($dtype:ident),+ $(,)?]) => {
-        $crate::shader::Shader {
+        $crate::gpu::shader::Shader {
             variants: &[
                 $(
                     $crate::shader_variant!($name, $dtype),

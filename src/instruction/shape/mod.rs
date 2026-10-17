@@ -1,8 +1,9 @@
 mod push_constants;
 
 use crate::VKMLError;
+use crate::gpu::shader::{Shader, shader};
 use crate::instruction::shape::push_constants::ShapePushConstants;
-use crate::instruction::{Dispatch, Instruction, PushConstants, Shader, VkOperation, shader};
+use crate::instruction::{Dispatch, Instruction, PushConstants, VkOperation};
 use crate::tensor::{ComputeTarget, TensorDesc};
 use crate::{ComputeManager, tensor_graph::TensorId};
 use onnx_extractor::DataType;

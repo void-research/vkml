@@ -1,7 +1,6 @@
 pub mod add;
 pub mod concat;
 pub mod conv;
-pub mod dispatch;
 pub mod div;
 pub mod expand;
 pub mod gemm;
@@ -42,8 +41,6 @@ pub use sub::SubInstruction;
 pub use transfer::TransferToDeviceInstruction;
 
 pub use crate::gpu::PushConstants;
-pub use crate::shader::{Shader, shader};
-pub use dispatch::{Dispatch, VkOperation};
 
 use crate::{
     ComputeManager, tensor::ComputeTarget, tensor_graph::TensorId, utils::error::VKMLError,
@@ -71,4 +68,31 @@ pub trait Instruction: Debug {
     fn execute_cpu(&self, _cm: &ComputeManager) {
         panic!("CPU execution not implemented for {:?}", self)
     }
+}
+
+pub enum Dispatch {
+    Gpu(VkOperation),
+    Cpu,
+}
+
+pub enum VkOperation {
+    Compute {
+        spv: &'static [u8],
+        local_size: [u32; 3],
+        work_size: [u32; 3],
+        push_constants: PushConstants,
+        storage_buffers: Box<[Option<TensorId>]>,
+    },
+    ClearAndCompute {
+        clear_dst: TensorId,
+        spv: &'static [u8],
+        local_size: [u32; 3],
+        work_size: [u32; 3],
+        push_constants: PushConstants,
+        storage_buffers: Box<[Option<TensorId>]>,
+    },
+    Copy {
+        src: TensorId,
+        dst: TensorId,
+    },
 }

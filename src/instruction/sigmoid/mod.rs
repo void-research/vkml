@@ -1,12 +1,12 @@
 mod f32_f32_cpu;
 
 use crate::VKMLError;
+use crate::gpu::shader::{Shader, shader};
 use crate::utils::math::{broadcast_shape, broadcast_strides};
 use crate::{
     ComputeManager,
     instruction::{
-        Dispatch, Instruction, PushConstants, Shader, VkOperation, shader,
-        sigmoid::f32_f32_cpu::f32_f32_cpu,
+        Dispatch, Instruction, PushConstants, VkOperation, sigmoid::f32_f32_cpu::f32_f32_cpu,
     },
     tensor::ComputeTarget,
     tensor_graph::TensorId,

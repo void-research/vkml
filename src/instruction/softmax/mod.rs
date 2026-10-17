@@ -3,12 +3,11 @@ mod push_constants;
 
 use crate::ComputeManager;
 use crate::VKMLError;
+use crate::gpu::shader::{Shader, shader};
 use crate::instruction::softmax::push_constants::SoftmaxPushConstants;
-
 use crate::{
     instruction::{
-        Dispatch, Instruction, PushConstants, Shader, VkOperation, shader,
-        softmax::f32_f32_cpu::f32_f32_cpu,
+        Dispatch, Instruction, PushConstants, VkOperation, softmax::f32_f32_cpu::f32_f32_cpu,
     },
     tensor::ComputeTarget,
     tensor_graph::TensorId,

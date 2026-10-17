@@ -3,6 +3,7 @@ pub mod extensions;
 pub mod memory;
 pub mod pool;
 pub mod push_constants;
+pub mod shader;
 
 pub use device::{Gpu, HostAccessMode};
 pub use extensions::VkExtensions;

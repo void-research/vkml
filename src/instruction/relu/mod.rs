@@ -2,9 +2,9 @@ mod f32_f32_cpu;
 
 use crate::ComputeManager;
 use crate::VKMLError;
+use crate::gpu::shader::{Shader, shader};
 use crate::instruction::{
-    Dispatch, Instruction, PushConstants, Shader, VkOperation, relu::f32_f32_cpu::f32_f32_cpu,
-    shader,
+    Dispatch, Instruction, PushConstants, VkOperation, relu::f32_f32_cpu::f32_f32_cpu,
 };
 use crate::tensor::ComputeTarget;
 use crate::tensor_graph::TensorId;
