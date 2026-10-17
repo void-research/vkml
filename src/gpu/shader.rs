@@ -35,10 +35,6 @@ macro_rules! shader {
         ])
     };
 
-    ($name:literal, IArithmetic) => {
-        $crate::shader!($name)
-    };
-
     // Floating-point types
     ($name:literal, Float) => {
         $crate::shader!($name, [Float, Float16, Double])
