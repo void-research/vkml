@@ -219,7 +219,10 @@ impl Instruction for ConvInstruction {
                         let s_total = out_h * out_w;
                         let k_total = in_c * k_h * k_w;
 
-                        let is_1x1_direct_gemm = self.group == 1
+                        let conv_gemm_enabled = cm.chosen_optimisations().conv_gemm;
+
+                        let is_1x1_direct_gemm = conv_gemm_enabled
+                            && self.group == 1
                             && batch == 1
                             && k_h == 1
                             && k_w == 1
@@ -276,7 +279,8 @@ impl Instruction for ConvInstruction {
                             };
 
                             (shader, local_size, pc_values, work_size)
-                        } else if self.group == 1
+                        } else if conv_gemm_enabled
+                            && self.group == 1
                             && gpu.max_shared_memory_size() >= 512
                             && out_c >= 8
                             && s_total >= 8

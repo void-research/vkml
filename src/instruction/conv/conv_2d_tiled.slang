@@ -66,6 +66,11 @@ void main<T : IArithmetic>(
     uint k_w = max(pc.k_w, 1u);
     uint out_w = max(pc.out_w, 1u);
 
+    uint ox = out_col % out_w;
+    uint oy = out_col / out_w;
+    int base_y = int(oy) * int(pc.s_h) - int(pc.pad_h);
+    int base_x = int(ox) * int(pc.s_w) - int(pc.pad_w);
+
     for (uint k_tile = 0; k_tile < num_k_tiles; k_tile++)
     {
         uint k_offset = k_tile * TILE_SIZE;
@@ -84,16 +89,13 @@ void main<T : IArithmetic>(
         uint k_row = k_offset + thread_row;
         if (k_row < pc.k && out_col < pc.s)
         {
-            uint ox = out_col % out_w;
-            uint oy = out_col / out_w;
-
             uint ic = k_row / k_hw;
             uint rem = k_row % k_hw;
             uint ky = rem / k_w;
             uint kx = rem % k_w;
 
-            int in_y_i = int(oy) * int(pc.s_h) - int(pc.pad_h) + int(ky) * int(pc.d_h);
-            int in_x_i = int(ox) * int(pc.s_w) - int(pc.pad_w) + int(kx) * int(pc.d_w);
+            int in_y_i = base_y + int(ky) * int(pc.d_h);
+            int in_x_i = base_x + int(kx) * int(pc.d_w);
 
             if (in_y_i >= 0 && in_y_i < int(pc.in_h) && in_x_i >= 0 && in_x_i < int(pc.in_w))
             {
