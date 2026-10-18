@@ -112,15 +112,35 @@ impl Instruction for GemmInstruction {
                     return Ok(None);
                 }
 
-                let use_tiled =
-                    gpu.max_shared_memory_size() >= 512 && (m as u64) >= 8 && (n as u64) >= 8;
-                let (shader, local_size) = if use_tiled {
+                let (shader, local_size, work_size) = if m == 1 {
+                    (
+                        &GEMM_SHADER,
+                        [gpu.workgroup_size_1d()[0], 1, 1],
+                        [n as u32, 1, 1],
+                    )
+                } else if n == 1 {
+                    let wg_y = gpu
+                        .subgroup_size()
+                        .min(gpu.max_workgroup_invocations())
+                        .min(gpu.max_workgroup_size()[1])
+                        .max(1);
+                    (&GEMM_SHADER, [1, wg_y, 1], [1, m as u32, 1])
+                } else if gpu.max_shared_memory_size() >= 512 && (m as u64) >= 8 && (n as u64) >= 8
+                {
                     let bytes_per_thread = 2 * y_dtype.size_in_bytes().unwrap_or(4);
                     let tile_dim =
                         gpu.optimal_tiled_matrix_size(m as u32, n as u32, bytes_per_thread);
-                    (&GEMM_TILED_SHADER, [tile_dim, tile_dim, 1])
+                    (
+                        &GEMM_TILED_SHADER,
+                        [tile_dim, tile_dim, 1],
+                        [n as u32, m as u32, 1],
+                    )
                 } else {
-                    (&GEMM_SHADER, gpu.workgroup_size_2d())
+                    (
+                        &GEMM_SHADER,
+                        gpu.workgroup_size_2d(),
+                        [n as u32, m as u32, 1],
+                    )
                 };
 
                 let Some(spv) = gpu.get_spirv(shader, y_dtype) else {
@@ -169,7 +189,7 @@ impl Instruction for GemmInstruction {
                 Ok(Some(Dispatch::Gpu(VkOperation::Compute {
                     spv,
                     local_size,
-                    work_size: [n as u32, m as u32, 1],
+                    work_size,
                     push_constants,
                 })))
             }

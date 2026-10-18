@@ -3,6 +3,7 @@ mod f32_f32_f32_f32_cpu;
 use crate::ComputeManager;
 use crate::VKMLError;
 use crate::gpu::shader::{Shader, shader};
+use crate::instruction::gemm::{GEMM_SHADER, GEMM_TILED_SHADER};
 use crate::utils::{OnnxAutoPad, calc_begin_and_end_pads};
 use crate::{
     instruction::{
@@ -18,6 +19,7 @@ use std::fmt::{Debug, Formatter, Result as FmtResult};
 
 pub static CONV_1D_SHADER: Shader = shader!("conv_1d");
 pub static CONV_2D_SHADER: Shader = shader!("conv_2d");
+pub static CONV_2D_TILED_SHADER: Shader = shader!("conv_2d_tiled");
 pub static CONV_3D_SHADER: Shader = shader!("conv_3d");
 
 pub struct ConvInstruction {
@@ -197,39 +199,154 @@ impl Instruction for ConvInstruction {
                         )
                     }
                     2 => {
-                        let pc_values = PushConstants::new()
-                            .buffer(self.src)
-                            .buffer(self.weights)
-                            .buffer(self.dst)
-                            .buffer(self.bias)
-                            .push(src_dims[0] as u32)
-                            .push(src_dims[1] as u32)
-                            .push(dst_dims[1] as u32)
-                            .push(src_dims[2] as u32)
-                            .push(src_dims[3] as u32)
-                            .push(dst_dims[2] as u32)
-                            .push(dst_dims[3] as u32)
-                            .push(self.kernel_shape.first().copied().unwrap_or(1) as u32)
-                            .push(self.kernel_shape.get(1).copied().unwrap_or(1) as u32)
-                            .push(self.strides.first().copied().unwrap_or(1) as u32)
-                            .push(self.strides.get(1).copied().unwrap_or(1) as u32)
-                            .push(self.dilations.first().copied().unwrap_or(1) as u32)
-                            .push(self.dilations.get(1).copied().unwrap_or(1) as u32)
-                            .push(pb.first().copied().unwrap_or(0) as u32)
-                            .push(pb.get(1).copied().unwrap_or(0) as u32)
-                            .push(self.group as u32)
-                            .push(if self.bias.is_some() { 1u32 } else { 0u32 });
-
-                        let out_w = dst_dims[3] as u32;
+                        let batch = src_dims[0] as u32;
+                        let in_c = src_dims[1] as u32;
+                        let out_c = dst_dims[1] as u32;
+                        let in_h = src_dims[2] as u32;
+                        let in_w = src_dims[3] as u32;
                         let out_h = dst_dims[2] as u32;
-                        let batch_nm = (dst_dims[0] as u32) * (dst_dims[1] as u32);
+                        let out_w = dst_dims[3] as u32;
 
-                        (
-                            &CONV_2D_SHADER,
-                            gpu.workgroup_size_2d(),
-                            pc_values,
-                            [out_w, out_h, batch_nm],
-                        )
+                        let k_h = self.kernel_shape.first().copied().unwrap_or(1) as u32;
+                        let k_w = self.kernel_shape.get(1).copied().unwrap_or(1) as u32;
+                        let s_h = self.strides.first().copied().unwrap_or(1) as u32;
+                        let s_w = self.strides.get(1).copied().unwrap_or(1) as u32;
+                        let d_h = self.dilations.first().copied().unwrap_or(1) as u32;
+                        let d_w = self.dilations.get(1).copied().unwrap_or(1) as u32;
+                        let pad_h = pb.first().copied().unwrap_or(0) as u32;
+                        let pad_w = pb.get(1).copied().unwrap_or(0) as u32;
+
+                        let s_total = out_h * out_w;
+                        let k_total = in_c * k_h * k_w;
+
+                        let is_1x1_direct_gemm = self.group == 1
+                            && batch == 1
+                            && k_h == 1
+                            && k_w == 1
+                            && s_h == 1
+                            && s_w == 1
+                            && d_h == 1
+                            && d_w == 1
+                            && pad_h == 0
+                            && pad_w == 0;
+
+                        if is_1x1_direct_gemm {
+                            let m = out_c;
+                            let n = s_total;
+                            let has_bias = self.bias.is_some();
+
+                            let pc_values = PushConstants::new()
+                                .buffer(self.weights)
+                                .buffer(self.src)
+                                .buffer(self.bias)
+                                .buffer(self.dst)
+                                .push(m)
+                                .push(k_total)
+                                .push(n)
+                                .push(in_c)
+                                .push(1u32)
+                                .push(n)
+                                .push(1u32)
+                                .push(n)
+                                .push(1u32)
+                                .push(if has_bias { 1u32 } else { 0u32 })
+                                .push(0u32)
+                                .push(0u32)
+                                .push(0u32)
+                                .push(1.0f32)
+                                .push(1.0f32)
+                                .push(if has_bias { 1u32 } else { 0u32 });
+
+                            let (shader, local_size, work_size) = if m == 1 {
+                                (&GEMM_SHADER, [gpu.workgroup_size_1d()[0], 1, 1], [n, 1, 1])
+                            } else if n == 1 {
+                                let wg_y = gpu
+                                    .subgroup_size()
+                                    .min(gpu.max_workgroup_invocations())
+                                    .min(gpu.max_workgroup_size()[1])
+                                    .max(1);
+                                (&GEMM_SHADER, [1, wg_y, 1], [1, m, 1])
+                            } else if gpu.max_shared_memory_size() >= 512 && m >= 8 && n >= 8 {
+                                let bytes_per_thread = 2 * dtype.size_in_bytes().unwrap_or(4);
+                                let tile_dim =
+                                    gpu.optimal_tiled_matrix_size(m, n, bytes_per_thread);
+                                (&GEMM_TILED_SHADER, [tile_dim, tile_dim, 1], [n, m, 1])
+                            } else {
+                                (&GEMM_SHADER, gpu.workgroup_size_2d(), [n, m, 1])
+                            };
+
+                            (shader, local_size, pc_values, work_size)
+                        } else if self.group == 1
+                            && gpu.max_shared_memory_size() >= 512
+                            && out_c >= 8
+                            && s_total >= 8
+                        {
+                            let bytes_per_thread = 2 * dtype.size_in_bytes().unwrap_or(4);
+                            let tile_dim =
+                                gpu.optimal_tiled_matrix_size(out_c, s_total, bytes_per_thread);
+
+                            let pc_values = PushConstants::new()
+                                .buffer(self.src)
+                                .buffer(self.weights)
+                                .buffer(self.dst)
+                                .buffer(self.bias)
+                                .push(batch)
+                                .push(in_c)
+                                .push(out_c)
+                                .push(in_h)
+                                .push(in_w)
+                                .push(out_h)
+                                .push(out_w)
+                                .push(k_h)
+                                .push(k_w)
+                                .push(s_h)
+                                .push(s_w)
+                                .push(d_h)
+                                .push(d_w)
+                                .push(pad_h)
+                                .push(pad_w)
+                                .push(k_total)
+                                .push(s_total)
+                                .push(if self.bias.is_some() { 1u32 } else { 0u32 });
+
+                            (
+                                &CONV_2D_TILED_SHADER,
+                                [tile_dim, tile_dim, 1],
+                                pc_values,
+                                [s_total, out_c, batch],
+                            )
+                        } else {
+                            let pc_values = PushConstants::new()
+                                .buffer(self.src)
+                                .buffer(self.weights)
+                                .buffer(self.dst)
+                                .buffer(self.bias)
+                                .push(batch)
+                                .push(in_c)
+                                .push(out_c)
+                                .push(in_h)
+                                .push(in_w)
+                                .push(out_h)
+                                .push(out_w)
+                                .push(k_h)
+                                .push(k_w)
+                                .push(s_h)
+                                .push(s_w)
+                                .push(d_h)
+                                .push(d_w)
+                                .push(pad_h)
+                                .push(pad_w)
+                                .push(self.group as u32)
+                                .push(if self.bias.is_some() { 1u32 } else { 0u32 });
+
+                            let batch_nm = batch * out_c;
+                            (
+                                &CONV_2D_SHADER,
+                                gpu.workgroup_size_2d(),
+                                pc_values,
+                                [out_w, out_h, batch_nm],
+                            )
+                        }
                     }
                     3 => {
                         let pc_values = PushConstants::new()
