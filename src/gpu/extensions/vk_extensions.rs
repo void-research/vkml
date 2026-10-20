@@ -8,7 +8,7 @@ use std::any::Any;
 use std::ffi::{CStr, c_void};
 use std::os::raw::c_char;
 use std::ptr;
-use vulkanalia::vk::InstanceV1_0;
+use vulkanalia::vk::{InstanceV1_0, InstanceV1_1};
 use vulkanalia::{Instance, vk};
 
 // helpers for preparing device extension names and an owned p_next chain
@@ -96,12 +96,47 @@ impl VkExtensions {
                 b"VK_KHR_shader_float16_int8" => res.shader_float_16_int8 = true,
                 b"VK_KHR_16bit_storage" => res.storage_16bit = true,
                 b"VK_KHR_shader_bfloat16" => res.shader_bfloat16 = true,
-                b"VK_EXT_shader_atomic_float" => res.shader_atomic_float = true,
-                b"VK_EXT_shader_atomic_float2" => res.shader_atomic_float2 = true,
+                b"VK_EXT_shader_atomic_float" => {
+                    res.shader_atomic_float =
+                        Self::query_atomic_float_support(instance, physical_device);
+                }
+                b"VK_EXT_shader_atomic_float2" => {
+                    res.shader_atomic_float2 =
+                        Self::query_atomic_float2_support(instance, physical_device);
+                }
                 _ => {}
             }
         }
         Ok(res)
+    }
+
+    fn query_atomic_float_support(
+        instance: &Instance,
+        physical_device: vk::PhysicalDevice,
+    ) -> bool {
+        let mut feat = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default();
+        let mut feat2 = vk::PhysicalDeviceFeatures2 {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_FEATURES_2,
+            next: &mut feat as *mut _ as *mut _,
+            features: Default::default(),
+        };
+        unsafe { instance.get_physical_device_features2(physical_device, &mut feat2) };
+        feat.shader_buffer_float32_atomic_add == vk::TRUE
+            && feat.shader_buffer_float64_atomic_add == vk::TRUE
+    }
+
+    fn query_atomic_float2_support(
+        instance: &Instance,
+        physical_device: vk::PhysicalDevice,
+    ) -> bool {
+        let mut feat = vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT::default();
+        let mut feat2 = vk::PhysicalDeviceFeatures2 {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_FEATURES_2,
+            next: &mut feat as *mut _ as *mut _,
+            features: Default::default(),
+        };
+        unsafe { instance.get_physical_device_features2(physical_device, &mut feat2) };
+        feat.shader_buffer_float16_atomic_add == vk::TRUE
     }
 
     fn query_cooperative_matrix_limits(
