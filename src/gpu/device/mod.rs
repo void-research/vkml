@@ -25,6 +25,10 @@ use allocator::StagingResources;
 // if ever needed, vk 1.4 does give us 256 as the new guarenteed minimum
 pub const MAX_PUSH_CONSTANT_BYTES: usize = 128;
 
+// if VK_EXT_memory_budget exists or not
+const MEMORY_PERCENTAGE_IF_USAGE_KNOWN: u128 = 95;
+const MEMORY_PERCENTAGE_IF_USAGE_NOT_KNOWN: u128 = 80;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostAccessMode {
     /// Tensors remain device local and host access occurs through staging.
@@ -229,12 +233,12 @@ impl Gpu {
                 // from VK_EXT_memory_budget, scaled to 95% to account for overhead
                 let reported_budget =
                     budget_props.heap_budget[device_local_heap_index as usize] as u128;
-                ((reported_budget * 95) / 100) as u64
+                ((reported_budget * MEMORY_PERCENTAGE_IF_USAGE_KNOWN) / 100) as u64
             } else {
                 // use 80% of total device memory
                 let total_memory =
                     memory_properties.memory_heaps[device_local_heap_index as usize].size as u128;
-                ((total_memory * 80) / 100) as u64
+                ((total_memory * MEMORY_PERCENTAGE_IF_USAGE_NOT_KNOWN) / 100) as u64
             };
 
             let host_access_mode = if host_visible_device_local_bytes >= memory_budget {
