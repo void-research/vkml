@@ -243,6 +243,11 @@ impl Gpu {
                 HostAccessMode::DeviceLocalWithStaging
             };
 
+            let memory_tracker = MemoryTracker::new(memory_budget);
+            if host_access_mode == HostAccessMode::DeviceLocalWithStaging {
+                memory_tracker.allocate(allocator::STAGING_SIZE as u64);
+            }
+
             Ok(Self {
                 device_name,
                 properties,
@@ -255,7 +260,7 @@ impl Gpu {
 
                 physical_device,
                 compute_queue,
-                memory_tracker: MemoryTracker::new(memory_budget),
+                memory_tracker,
                 extensions: vk_extensions,
 
                 host_access_mode,

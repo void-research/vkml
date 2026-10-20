@@ -9,7 +9,7 @@ use crate::{
     utils::error::VKMLError,
 };
 
-const STAGING_SIZE: usize = 64 * 1024 * 1024; // 64MB
+pub(crate) const STAGING_SIZE: usize = 64 * 1024 * 1024; // 64MB
 
 pub struct StagingResources {
     pub buffer: vk::Buffer,
@@ -349,8 +349,6 @@ impl Gpu {
             self.device
                 .bind_buffer_memory(buffer, memory, 0)
                 .expect("Failed to bind staging buffer memory");
-
-            self.memory_allocate_usage(STAGING_SIZE as vk::DeviceSize);
 
             let command_buffer_info = vk::CommandBufferAllocateInfo {
                 s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
