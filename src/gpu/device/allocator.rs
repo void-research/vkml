@@ -9,6 +9,8 @@ use crate::{
     utils::error::VKMLError,
 };
 
+const STAGING_SIZE: usize = 64 * 1024 * 1024; // 64MB
+
 pub struct StagingResources {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
@@ -299,32 +301,16 @@ impl Gpu {
         Ok(output)
     }
 
-    fn plan_staging(&self) -> (usize, bool) {
-        let total_memory = self.memory_total().max(1);
-        let mut size_bytes = (total_memory / 20).max(1); // target: 5% of total memory
-        let mut device_local = false;
-
-        if self.host_visible_device_local_bytes > 0 {
-            let visibility_threshold = (total_memory / 100).max(1); // require ~1% before preferring device-local
-            if self.host_visible_device_local_bytes >= visibility_threshold {
-                size_bytes = self.host_visible_device_local_bytes.min(size_bytes);
-                device_local = true;
-            }
-        }
-
-        (size_bytes.max(1) as usize, device_local)
-    }
-
-    // Staging buffer is host-visible and sized to 5% of the tracked maximum memory.
+    // Staging buffer is host-visible and sized to STAGING_SIZE
     fn get_or_create_staging_resources(&self) -> &Mutex<StagingResources> {
         self.staging_resources.get_or_init(|| unsafe {
-            let (staging_size, device_local_staging) = self.plan_staging();
+            let device_local_staging = self.host_visible_device_local_bytes >= STAGING_SIZE as u64;
 
             let buffer_info = vk::BufferCreateInfo {
                 s_type: vk::StructureType::BUFFER_CREATE_INFO,
                 next: std::ptr::null(),
                 flags: vk::BufferCreateFlags::empty(),
-                size: staging_size as vk::DeviceSize,
+                size: STAGING_SIZE as vk::DeviceSize,
                 usage: vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST,
                 sharing_mode: vk::SharingMode::EXCLUSIVE,
                 queue_family_index_count: 0,
@@ -364,7 +350,7 @@ impl Gpu {
                 .bind_buffer_memory(buffer, memory, 0)
                 .expect("Failed to bind staging buffer memory");
 
-            self.memory_allocate_usage(staging_size as vk::DeviceSize);
+            self.memory_allocate_usage(STAGING_SIZE as vk::DeviceSize);
 
             let command_buffer_info = vk::CommandBufferAllocateInfo {
                 s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
@@ -393,7 +379,7 @@ impl Gpu {
             Mutex::new(StagingResources {
                 buffer,
                 memory,
-                size: staging_size as vk::DeviceSize,
+                size: STAGING_SIZE as vk::DeviceSize,
                 properties: requested_properties,
                 command_buffer,
                 fence,
