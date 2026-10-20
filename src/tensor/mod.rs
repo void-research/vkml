@@ -7,10 +7,19 @@ pub use desc::TensorDesc;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum ComputeTarget {
     Cpu,
     Gpu(Arc<Gpu>),
+}
+
+impl std::fmt::Debug for ComputeTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ComputeTarget::Cpu => write!(f, "CPU"),
+            ComputeTarget::Gpu(gpu) => write!(f, "{}", gpu.device_name()),
+        }
+    }
 }
 
 impl PartialEq for ComputeTarget {
