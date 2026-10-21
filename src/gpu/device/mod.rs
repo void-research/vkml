@@ -435,24 +435,24 @@ impl Gpu {
     pub fn submit(
         &self,
         command_buffers: &[vk::CommandBuffer],
-        signal_timeline: bool,
-    ) -> Result<Option<u64>, VKMLError> {
-        let target_value = if signal_timeline {
-            Some(self.next_timeline_value.fetch_add(1, Ordering::Relaxed))
+        host_wait: bool,
+    ) -> Result<(), VKMLError> {
+        let target_value = if host_wait {
+            self.next_timeline_value.fetch_add(1, Ordering::Relaxed)
         } else {
-            None
+            0
         };
 
         let signal_semaphores = [self.timeline_semaphore];
-        let signal_values = [target_value.unwrap_or(0)];
+        let signal_values = [target_value];
 
         let timeline_submit_info = vk::TimelineSemaphoreSubmitInfo {
             s_type: vk::StructureType::TIMELINE_SEMAPHORE_SUBMIT_INFO,
             next: ptr::null(),
             wait_semaphore_value_count: 0,
             wait_semaphore_values: ptr::null(),
-            signal_semaphore_value_count: u32::from(signal_timeline),
-            signal_semaphore_values: if signal_timeline {
+            signal_semaphore_value_count: u32::from(host_wait),
+            signal_semaphore_values: if host_wait {
                 signal_values.as_ptr()
             } else {
                 ptr::null()
@@ -461,7 +461,7 @@ impl Gpu {
 
         let submit_info = vk::SubmitInfo {
             s_type: vk::StructureType::SUBMIT_INFO,
-            next: if signal_timeline {
+            next: if host_wait {
                 &timeline_submit_info as *const _ as *const c_void
             } else {
                 ptr::null()
@@ -471,8 +471,8 @@ impl Gpu {
             wait_dst_stage_mask: ptr::null(),
             command_buffer_count: command_buffers.len() as u32,
             command_buffers: command_buffers.as_ptr(),
-            signal_semaphore_count: u32::from(signal_timeline),
-            signal_semaphores: if signal_timeline {
+            signal_semaphore_count: u32::from(host_wait),
+            signal_semaphores: if host_wait {
                 signal_semaphores.as_ptr()
             } else {
                 ptr::null()
@@ -482,33 +482,19 @@ impl Gpu {
         unsafe {
             self.device
                 .queue_submit(self.compute_queue, &[submit_info], vk::Fence::null())?;
-        }
 
-        Ok(target_value)
-    }
+            if host_wait {
+                let wait_info = vk::SemaphoreWaitInfo {
+                    s_type: vk::StructureType::SEMAPHORE_WAIT_INFO,
+                    next: ptr::null(),
+                    flags: vk::SemaphoreWaitFlags::empty(),
+                    semaphore_count: 1,
+                    semaphores: signal_semaphores.as_ptr(),
+                    values: signal_values.as_ptr(),
+                };
 
-    pub fn submit_and_wait(&self, command_buffers: &[vk::CommandBuffer]) -> Result<(), VKMLError> {
-        if let Some(target_value) = self.submit(command_buffers, true)? {
-            self.wait_semaphore(target_value)?;
-        }
-        Ok(())
-    }
-
-    pub fn wait_semaphore(&self, target_value: u64) -> Result<(), VKMLError> {
-        let semaphores = [self.timeline_semaphore];
-        let values = [target_value];
-
-        let wait_info = vk::SemaphoreWaitInfo {
-            s_type: vk::StructureType::SEMAPHORE_WAIT_INFO,
-            next: ptr::null(),
-            flags: vk::SemaphoreWaitFlags::empty(),
-            semaphore_count: 1,
-            semaphores: semaphores.as_ptr(),
-            values: values.as_ptr(),
-        };
-
-        unsafe {
-            self.device.wait_semaphores(&wait_info, u64::MAX)?;
+                self.device.wait_semaphores(&wait_info, u64::MAX)?;
+            }
         }
 
         Ok(())

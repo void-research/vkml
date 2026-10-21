@@ -68,10 +68,7 @@ impl<'a> ExecutionState<'a> {
                 command_buffer,
                 needs_host_wait,
             } => {
-                if let Some(target_value) = gpu.submit(&[*command_buffer], *needs_host_wait)? {
-                    // Block this worker until the GPU reaches the target timeline value so dependents see consistent state.
-                    gpu.wait_semaphore(target_value)?;
-                }
+                gpu.submit(&[*command_buffer], *needs_host_wait)?;
             }
             Executor::Cpu => {
                 self.execute_cpu_chunk(chunk, compute_manager);

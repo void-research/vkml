@@ -213,7 +213,7 @@ impl Gpu {
 
                 self.end_command_buffer(command_buffer)?;
 
-                self.submit_and_wait(&[command_buffer])?;
+                self.submit(&[command_buffer], true)?;
 
                 self.device.reset_command_buffer(
                     command_buffer,
@@ -269,7 +269,7 @@ impl Gpu {
 
                 self.end_command_buffer(command_buffer)?;
 
-                self.submit_and_wait(&[command_buffer])?;
+                self.submit(&[command_buffer], true)?;
 
                 let data_ptr = self.device.map_memory(
                     staging_buffer.memory,
