@@ -3,11 +3,14 @@ use std::{
     collections::HashMap,
     ffi::{CStr, c_void},
     ptr,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use vulkanalia::{
     Device, Instance,
-    vk::{self, DeviceV1_0, DeviceV1_3, Handle, InstanceV1_0, InstanceV1_1},
+    vk::{self, DeviceV1_0, DeviceV1_2, DeviceV1_3, Handle, InstanceV1_0, InstanceV1_1},
 };
 
 use crate::{
@@ -54,6 +57,10 @@ pub struct Gpu {
 
     host_access_mode: HostAccessMode,
     staging_resources: OnceLock<Mutex<StagingResources>>,
+
+    // multi-threaded submissions can race if not careful
+    timeline_semaphore: vk::Semaphore,
+    next_timeline_value: AtomicU64,
 
     // Drop order matters: fields drop top-to-bottom
     pipelines: Mutex<HashMap<(usize, [u32; 3]), vk::Pipeline>>,
@@ -197,6 +204,21 @@ impl Gpu {
 
             let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
 
+            let mut timeline_type_info = vk::SemaphoreTypeCreateInfo {
+                s_type: vk::StructureType::SEMAPHORE_TYPE_CREATE_INFO,
+                next: ptr::null(),
+                semaphore_type: vk::SemaphoreType::TIMELINE,
+                initial_value: 0,
+            };
+
+            let semaphore_create_info = vk::SemaphoreCreateInfo {
+                s_type: vk::StructureType::SEMAPHORE_CREATE_INFO,
+                next: &mut timeline_type_info as *mut _ as *const c_void,
+                flags: vk::SemaphoreCreateFlags::empty(),
+            };
+
+            let timeline_semaphore = device.create_semaphore(&semaphore_create_info, None)?;
+
             let target_props = vk::MemoryPropertyFlags::DEVICE_LOCAL
                 | vk::MemoryPropertyFlags::HOST_VISIBLE
                 | vk::MemoryPropertyFlags::HOST_COHERENT;
@@ -269,6 +291,9 @@ impl Gpu {
 
                 host_access_mode,
                 staging_resources: OnceLock::new(),
+
+                timeline_semaphore,
+                next_timeline_value: AtomicU64::new(1),
 
                 pipelines: Mutex::new(HashMap::new()),
                 pipeline_layout,
@@ -407,51 +432,86 @@ impl Gpu {
         Ok(())
     }
 
-    pub fn submit_with_fence(
+    pub fn submit(
         &self,
         command_buffers: &[vk::CommandBuffer],
-        fence: Option<vk::Fence>,
-    ) -> Result<(), VKMLError> {
-        unsafe {
-            let submit_info = vk::SubmitInfo {
-                s_type: vk::StructureType::SUBMIT_INFO,
-                next: ptr::null(),
-                wait_semaphore_count: 0,
-                wait_semaphores: ptr::null(),
-                wait_dst_stage_mask: ptr::null(),
-                command_buffer_count: command_buffers.len() as u32,
-                command_buffers: command_buffers.as_ptr(),
-                signal_semaphore_count: 0,
-                signal_semaphores: ptr::null(),
-            };
-
-            self.device.queue_submit(
-                self.compute_queue,
-                &[submit_info],
-                fence.unwrap_or(vk::Fence::null()),
-            )?;
-        }
-
-        Ok(())
-    }
-
-    pub fn wait_and_reset_fence(&self, fence: vk::Fence) -> Result<(), VKMLError> {
-        unsafe {
-            self.device.wait_for_fences(&[fence], true, u64::MAX)?;
-            self.device.reset_fences(&[fence])?;
-        }
-
-        Ok(())
-    }
-
-    pub fn create_fence(&self) -> Result<vk::Fence, VKMLError> {
-        let fence_info = vk::FenceCreateInfo {
-            s_type: vk::StructureType::FENCE_CREATE_INFO,
-            next: ptr::null(),
-            flags: vk::FenceCreateFlags::empty(),
+        signal_timeline: bool,
+    ) -> Result<Option<u64>, VKMLError> {
+        let target_value = if signal_timeline {
+            Some(self.next_timeline_value.fetch_add(1, Ordering::Relaxed))
+        } else {
+            None
         };
 
-        unsafe { Ok(self.device.create_fence(&fence_info, None)?) }
+        let signal_semaphores = [self.timeline_semaphore];
+        let signal_values = [target_value.unwrap_or(0)];
+
+        let timeline_submit_info = vk::TimelineSemaphoreSubmitInfo {
+            s_type: vk::StructureType::TIMELINE_SEMAPHORE_SUBMIT_INFO,
+            next: ptr::null(),
+            wait_semaphore_value_count: 0,
+            wait_semaphore_values: ptr::null(),
+            signal_semaphore_value_count: u32::from(signal_timeline),
+            signal_semaphore_values: if signal_timeline {
+                signal_values.as_ptr()
+            } else {
+                ptr::null()
+            },
+        };
+
+        let submit_info = vk::SubmitInfo {
+            s_type: vk::StructureType::SUBMIT_INFO,
+            next: if signal_timeline {
+                &timeline_submit_info as *const _ as *const c_void
+            } else {
+                ptr::null()
+            },
+            wait_semaphore_count: 0,
+            wait_semaphores: ptr::null(),
+            wait_dst_stage_mask: ptr::null(),
+            command_buffer_count: command_buffers.len() as u32,
+            command_buffers: command_buffers.as_ptr(),
+            signal_semaphore_count: u32::from(signal_timeline),
+            signal_semaphores: if signal_timeline {
+                signal_semaphores.as_ptr()
+            } else {
+                ptr::null()
+            },
+        };
+
+        unsafe {
+            self.device
+                .queue_submit(self.compute_queue, &[submit_info], vk::Fence::null())?;
+        }
+
+        Ok(target_value)
+    }
+
+    pub fn submit_and_wait(&self, command_buffers: &[vk::CommandBuffer]) -> Result<(), VKMLError> {
+        if let Some(target_value) = self.submit(command_buffers, true)? {
+            self.wait_semaphore(target_value)?;
+        }
+        Ok(())
+    }
+
+    pub fn wait_semaphore(&self, target_value: u64) -> Result<(), VKMLError> {
+        let semaphores = [self.timeline_semaphore];
+        let values = [target_value];
+
+        let wait_info = vk::SemaphoreWaitInfo {
+            s_type: vk::StructureType::SEMAPHORE_WAIT_INFO,
+            next: ptr::null(),
+            flags: vk::SemaphoreWaitFlags::empty(),
+            semaphore_count: 1,
+            semaphores: semaphores.as_ptr(),
+            values: values.as_ptr(),
+        };
+
+        unsafe {
+            self.device.wait_semaphores(&wait_info, u64::MAX)?;
+        }
+
+        Ok(())
     }
 
     // insert a memory barrier ensuring previous compute writes are visible to subsequent compute dispatches
@@ -485,11 +545,11 @@ impl Drop for Gpu {
             if let Some(staging_mutex) = self.staging_resources.get()
                 && let Ok(res) = staging_mutex.lock()
             {
-                self.device.destroy_fence(res.fence, None);
                 self.device.destroy_buffer(res.buffer, None);
                 self.device.free_memory(res.memory, None);
             }
 
+            self.device.destroy_semaphore(self.timeline_semaphore, None);
             self.device.destroy_command_pool(self.command_pool, None);
 
             if let Ok(pipelines) = self.pipelines.lock() {

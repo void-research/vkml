@@ -17,7 +17,7 @@ pub enum Executor {
     Gpu {
         gpu: Arc<Gpu>,
         command_buffer: vk::CommandBuffer,
-        fence: Option<vk::Fence>,
+        needs_host_wait: bool,
     },
 }
 
@@ -67,7 +67,7 @@ pub fn create_execution_plan(compute_manager: &ComputeManager) -> Result<Executi
     let (root_chunks, output_chunks) =
         build_chunk_dag_and_mark_outputs(&mut chunks, dep_graph, &op_to_chunk, tensor_graph)?;
 
-    // stage 3: assemble execution chunks (layering, fences, command buffers)
+    // stage 3: assemble execution chunks (layering, sync, command buffers)
     let execution_chunks = assemble_execution_chunks(chunks, compute_manager)?;
 
     Ok(ExecutionPlan {
@@ -213,17 +213,11 @@ fn assemble_execution_chunks(
 
         let execution = match &chunk.target {
             ComputeTarget::Gpu(gpu) => {
-                let needs_fence = chunk.is_output
+                let needs_host_wait = chunk.is_output
                     || chunk
                         .dependents
                         .iter()
                         .any(|&dep| chunk_targets[dep] != chunk.target);
-
-                let fence = if needs_fence {
-                    Some(gpu.create_fence()?)
-                } else {
-                    None
-                };
 
                 let command_buffer =
                     create_gpu_chunk_command_buffer(compute_manager, &operation_layers, gpu)?;
@@ -231,7 +225,7 @@ fn assemble_execution_chunks(
                 Executor::Gpu {
                     gpu: gpu.clone(),
                     command_buffer,
-                    fence,
+                    needs_host_wait,
                 }
             }
             ComputeTarget::Cpu => Executor::Cpu,

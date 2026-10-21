@@ -66,13 +66,11 @@ impl<'a> ExecutionState<'a> {
             Executor::Gpu {
                 gpu,
                 command_buffer,
-                fence,
+                needs_host_wait,
             } => {
-                gpu.submit_with_fence(&[*command_buffer], *fence)?;
-
-                if let Some(fence_handle) = *fence {
-                    // Block this worker until the GPU signals completion so dependents see consistent state.
-                    gpu.wait_and_reset_fence(fence_handle)?;
+                if let Some(target_value) = gpu.submit(&[*command_buffer], *needs_host_wait)? {
+                    // Block this worker until the GPU reaches the target timeline value so dependents see consistent state.
+                    gpu.wait_semaphore(target_value)?;
                 }
             }
             Executor::Cpu => {

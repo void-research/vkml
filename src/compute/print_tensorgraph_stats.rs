@@ -33,9 +33,13 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
     }
 
     for (chunk_idx, chunk) in plan.chunks.iter().enumerate() {
-        let (device_str, has_fence) = match &chunk.execution {
+        let (device_str, needs_host_wait) = match &chunk.execution {
             Executor::Cpu => ("CPU", false),
-            Executor::Gpu { gpu, fence, .. } => (gpu.device_name(), fence.is_some()),
+            Executor::Gpu {
+                gpu,
+                needs_host_wait,
+                ..
+            } => (gpu.device_name(), *needs_host_wait),
         };
 
         let total_ops: usize = chunk.operation_layers.iter().map(|layer| layer.len()).sum();
@@ -46,10 +50,10 @@ pub fn print_tensor_flow(cm: &ComputeManager) {
             chunk_idx, device_str, total_ops, layer_count, chunk.predecessors, chunk.dependents
         );
         println!(
-            "  initial_dep_count={} is_output={} needs_host_wait_fence={}",
+            "  initial_dep_count={} is_output={} needs_host_wait={}",
             chunk.predecessors.len(),
             chunk.is_output,
-            has_fence
+            needs_host_wait
         );
         println!("{:-<100}", "");
 

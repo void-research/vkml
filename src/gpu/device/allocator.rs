@@ -17,7 +17,6 @@ pub struct StagingResources {
     pub size: vk::DeviceSize,
     pub properties: vk::MemoryPropertyFlags,
     pub command_buffer: vk::CommandBuffer,
-    pub fence: vk::Fence,
 }
 
 impl Gpu {
@@ -177,7 +176,6 @@ impl Gpu {
         }
 
         let command_buffer = staging_buffer.command_buffer;
-        let fence = staging_buffer.fence;
 
         unsafe {
             let mut offset = 0usize;
@@ -215,8 +213,7 @@ impl Gpu {
 
                 self.end_command_buffer(command_buffer)?;
 
-                self.submit_with_fence(&[command_buffer], Some(fence))?;
-                self.wait_and_reset_fence(fence)?;
+                self.submit_and_wait(&[command_buffer])?;
 
                 self.device.reset_command_buffer(
                     command_buffer,
@@ -245,7 +242,6 @@ impl Gpu {
         }
 
         let command_buffer = staging_buffer.command_buffer;
-        let fence = staging_buffer.fence;
 
         unsafe {
             let mut offset = 0usize;
@@ -273,8 +269,7 @@ impl Gpu {
 
                 self.end_command_buffer(command_buffer)?;
 
-                self.submit_with_fence(&[command_buffer], Some(fence))?;
-                self.wait_and_reset_fence(fence)?;
+                self.submit_and_wait(&[command_buffer])?;
 
                 let data_ptr = self.device.map_memory(
                     staging_buffer.memory,
@@ -364,23 +359,12 @@ impl Gpu {
                 .expect("Failed to allocate staging command buffer");
             let command_buffer = command_buffers[0];
 
-            let fence_info = vk::FenceCreateInfo {
-                s_type: vk::StructureType::FENCE_CREATE_INFO,
-                next: std::ptr::null(),
-                flags: vk::FenceCreateFlags::empty(),
-            };
-            let fence = self
-                .device
-                .create_fence(&fence_info, None)
-                .expect("Failed to create staging fence");
-
             Mutex::new(StagingResources {
                 buffer,
                 memory,
                 size: STAGING_SIZE as vk::DeviceSize,
                 properties: requested_properties,
                 command_buffer,
-                fence,
             })
         })
     }

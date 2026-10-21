@@ -329,6 +329,15 @@ impl VkExtensions {
         head = (&*sync2_feat) as *const _ as *mut c_void;
         holders.push(sync2_feat);
 
+        let mut timeline_feat = Box::new(vk::PhysicalDeviceTimelineSemaphoreFeatures {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
+            next: ptr::null_mut(),
+            timeline_semaphore: vk::TRUE,
+        });
+        timeline_feat.next = head as *mut _;
+        head = (&*timeline_feat) as *const _ as *mut c_void;
+        holders.push(timeline_feat);
+
         let features = vk::PhysicalDeviceFeatures {
             shader_int64: vk::TRUE,
             shader_float64: vk::TRUE,
